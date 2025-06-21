@@ -257,6 +257,7 @@ class Mauka_Meta_Pixel_Tracking {
             $contents[] = array(
                 'id' => (string) $product_id,
                 'quantity' => $cart_item['quantity'],
+                'item_price' => ( isset($cart_item['data']) && method_exists($cart_item['data'], 'get_price') ) ? (float) $cart_item['data']->get_price() : 0,
             );
         }
 
@@ -298,6 +299,15 @@ class Mauka_Meta_Pixel_Tracking {
 
         $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($actual_product_id);
 
+        // Build contents with item_price for better match quality
+        $contents = array(
+            array(
+                'id' => (string) $product_data['content_id'],
+                'quantity' => $quantity,
+                'item_price' => $product_data['value'],
+            ),
+        );
+
         // Add to page for pixel tracking
         $this->add_pixel_event('AddToCart', array(
             'event_id'     => $event_id,
@@ -317,6 +327,7 @@ class Mauka_Meta_Pixel_Tracking {
                 'content_type' => 'product',
                 'value'        => $product_data['value'] * $quantity,
                 'currency'     => $product_data['currency'],
+                'contents'     => $contents,
             )
         );
     }
@@ -356,7 +367,7 @@ class Mauka_Meta_Pixel_Tracking {
         foreach ($cart->get_cart() as $item) {
             $pid = $item['variation_id'] ? $item['variation_id'] : $item['product_id'];
             $content_ids[] = (string) $pid;
-            $contents[] = array('id' => (string) $pid, 'quantity' => $item['quantity']);
+            $contents[] = array('id' => (string) $pid, 'quantity' => $item['quantity'], 'item_price' => ( isset($item['data']) && method_exists($item['data'], 'get_price') ) ? (float) $item['data']->get_price() : 0);
         }
         $payload = array(
             'content_ids' => $content_ids,
@@ -389,13 +400,15 @@ class Mauka_Meta_Pixel_Tracking {
         foreach ($order->get_items() as $item) {
             $pid = $item->get_variation_id() ? $item->get_variation_id() : $item->get_product_id();
             $content_ids[] = (string) $pid;
-            $contents[] = array('id' => (string) $pid, 'quantity' => $item->get_quantity());
+            $unit_price = $item->get_total() / max(1, $item->get_quantity());
+            $contents[] = array('id' => (string) $pid, 'quantity' => $item->get_quantity(), 'item_price' => (float) $unit_price);
         }
         $payload = array(
             'content_ids' => $content_ids,
             'contents' => $contents,
             'content_type' => 'product',
             'value' => (float) $order->get_total(),
+            'contents' => $contents,
             'currency' => $order->get_currency(),
             'num_items' => $order->get_item_count(),
         );
