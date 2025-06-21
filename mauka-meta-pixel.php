@@ -81,6 +81,9 @@ class Mauka_Meta_Pixel {
             'track_lead' => false,
             'track_completeregistration' => false,
             'track_search' => true,
+            'track_viewcategory' => true,
+            'track_addtowishlist' => true,
+            'track_addpaymentinfo' => true,
             'pixel_id' => '',
             'access_token' => '',
             'test_event_code' => ''
@@ -245,7 +248,8 @@ class Mauka_Meta_Pixel {
         $boolean_fields = array(
             'pixel_enabled', 'capi_enabled', 'test_mode', 'enable_logging',
             'track_pageview', 'track_viewcontent', 'track_addtocart', 'track_initiatecheckout',
-            'track_purchase', 'track_lead', 'track_completeregistration', 'track_search'
+            'track_purchase', 'track_lead', 'track_completeregistration', 'track_search',
+            'track_viewcategory', 'track_addtowishlist', 'track_addpaymentinfo'
         );
         
         foreach ($boolean_fields as $field) {
@@ -266,6 +270,9 @@ class Mauka_Meta_Pixel {
             'track_lead' => false,
             'track_completeregistration' => false,
             'track_search' => true,
+            'track_viewcategory' => true,
+            'track_addtowishlist' => true,
+            'track_addpaymentinfo' => true,
             'pixel_id' => '',
             'access_token' => '',
             'test_event_code' => ''
@@ -326,6 +333,9 @@ class Mauka_Meta_Pixel {
                 'track_lead' => false,
                 'track_completeregistration' => false,
                 'track_search' => true,
+                'track_viewcategory' => true,
+                'track_addtowishlist' => true,
+                'track_addpaymentinfo' => true,
                 'pixel_id' => '',
                 'access_token' => '',
                 'test_event_code' => ''

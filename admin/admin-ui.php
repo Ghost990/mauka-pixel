@@ -235,6 +235,24 @@ class Mauka_Meta_Pixel_Admin {
                                                                    <?php checked($options['track_completeregistration']); ?> />
                                                             <strong>CompleteRegistration</strong> - <?php _e('Regisztráció', 'mauka-meta-pixel'); ?>
                                                         </label>
+                                                        <br><br>
+                                                        <label>
+                                                            <input type="checkbox" name="mauka_meta_pixel_options[track_viewcategory]" value="1" 
+                                                                   <?php checked($options['track_viewcategory']); ?> />
+                                                            <strong>ViewCategory</strong> - <?php _e('Kategória megtekintés', 'mauka-meta-pixel'); ?>
+                                                        </label>
+                                                        <br><br>
+                                                        <label>
+                                                            <input type="checkbox" name="mauka_meta_pixel_options[track_addtowishlist]" value="1" 
+                                                                   <?php checked($options['track_addtowishlist']); ?> />
+                                                            <strong>AddToWishlist</strong> - <?php _e('Kívánságlistához adás (YITH)', 'mauka-meta-pixel'); ?>
+                                                        </label>
+                                                        <br><br>
+                                                        <label>
+                                                            <input type="checkbox" name="mauka_meta_pixel_options[track_addpaymentinfo]" value="1" 
+                                                                   <?php checked($options['track_addpaymentinfo']); ?> />
+                                                            <strong>AddPaymentInfo</strong> - <?php _e('Fizetési mód megadása', 'mauka-meta-pixel'); ?>
+                                                        </label>
                                                     </fieldset>
                                                 </td>
                                             </tr>
@@ -339,7 +357,8 @@ class Mauka_Meta_Pixel_Admin {
             'pixel_enabled', 'capi_enabled', 'test_mode', 'enable_logging',
             'track_pageview', 'track_viewcontent', 'track_addtocart', 
             'track_initiatecheckout', 'track_purchase', 'track_lead', 
-            'track_completeregistration', 'track_search'
+            'track_completeregistration', 'track_search', 'track_viewcategory',
+            'track_addtowishlist', 'track_addpaymentinfo'
         );
         
         foreach ($boolean_fields as $field) {
@@ -360,6 +379,9 @@ class Mauka_Meta_Pixel_Admin {
             'track_lead' => false,
             'track_completeregistration' => false,
             'track_search' => true,
+            'track_viewcategory' => true,
+            'track_addtowishlist' => true,
+            'track_addpaymentinfo' => true,
             'pixel_id' => '',
             'access_token' => '',
             'test_event_code' => ''

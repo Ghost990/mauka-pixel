@@ -98,70 +98,106 @@ class Mauka_Meta_Pixel_Helpers {
         // Hash with SHA256
         return hash('sha256', $data);
     }
-    
+
     /**
-     * Get hashed user data for current user
+     * Hash phone numbers specifically for GDPR compliance.
      */
-    public static function get_user_data() {
+    public static function hash_phone($phone) {
+        if (empty($phone)) {
+            return null;
+        }
+        // Remove all non-numeric characters
+        $phone = preg_replace('/[^0-9]/', '', $phone);
+        return hash('sha256', $phone);
+    }
+
+    /**
+     * Get hashed user data for current user or from order/checkout.
+     */
+    public static function get_user_data($order_id = null) {
         $user_data = array();
-        
-        // Get current user
-        $current_user = wp_get_current_user();
-        
-        if ($current_user && $current_user->ID > 0) {
-            // Email
-            if (!empty($current_user->user_email)) {
-                $user_data['em'] = self::hash_user_data($current_user->user_email);
+        $user = null;
+
+        if ($order_id) {
+            $order = wc_get_order($order_id);
+            if ($order) {
+                $user_id = $order->get_user_id();
+                if ($user_id) {
+                    $user = get_user_by('id', $user_id);
+                } else {
+                    // Guest user from a completed order
+                    $user_data = array(
+                        'em'      => self::hash_user_data($order->get_billing_email()),
+                        'ph'      => self::hash_phone($order->get_billing_phone()),
+                        'fn'      => self::hash_user_data($order->get_billing_first_name()),
+                        'ln'      => self::hash_user_data($order->get_billing_last_name()),
+                        'ct'      => self::hash_user_data($order->get_billing_city()),
+                        'st'      => self::hash_user_data($order->get_billing_state()),
+                        'zp'      => hash('sha256', $order->get_billing_postcode()),
+                        'country' => self::hash_user_data($order->get_billing_country()),
+                    );
+                }
             }
-            
-            // First name
-            if (!empty($current_user->first_name)) {
-                $user_data['fn'] = self::hash_user_data($current_user->first_name);
-            }
-            
-            // Last name  
-            if (!empty($current_user->last_name)) {
-                $user_data['ln'] = self::hash_user_data($current_user->last_name);
-            }
-            
-            // Phone (if available in user meta)
-            $phone = get_user_meta($current_user->ID, 'billing_phone', true);
-            if (!empty($phone)) {
-                $user_data['ph'] = self::hash_user_data(preg_replace('/[^0-9]/', '', $phone));
-            }
+        } else {
+            $user = wp_get_current_user();
         }
-        
-        // Try to get data from WooCommerce session/checkout
-        if (class_exists('WC') && function_exists('WC') && WC()->session) {
-            $customer = WC()->customer;
-            
-            if ($customer) {
-                // Email from customer
-                $email = $customer->get_email();
-                if (!empty($email) && empty($user_data['em'])) {
-                    $user_data['em'] = self::hash_user_data($email);
-                }
-                
-                // Phone from customer
-                $phone = $customer->get_billing_phone();
-                if (!empty($phone) && empty($user_data['ph'])) {
-                    $user_data['ph'] = self::hash_user_data(preg_replace('/[^0-9]/', '', $phone));
-                }
-                
-                // Names from customer
-                $first_name = $customer->get_first_name();
-                if (!empty($first_name) && empty($user_data['fn'])) {
-                    $user_data['fn'] = self::hash_user_data($first_name);
-                }
-                
-                $last_name = $customer->get_last_name();
-                if (!empty($last_name) && empty($user_data['ln'])) {
-                    $user_data['ln'] = self::hash_user_data($last_name);
-                }
-            }
+
+        if ($user && $user->ID) { // It's a logged-in user
+            $billing_first_name = get_user_meta($user->ID, 'billing_first_name', true);
+            $billing_last_name  = get_user_meta($user->ID, 'billing_last_name', true);
+
+            $user_data = array(
+                'em'          => self::hash_user_data($user->user_email),
+                'ph'          => self::hash_phone(get_user_meta($user->ID, 'billing_phone', true)),
+                'fn'          => self::hash_user_data($billing_first_name ?: $user->first_name),
+                'ln'          => self::hash_user_data($billing_last_name ?: $user->last_name),
+                'ct'          => self::hash_user_data(get_user_meta($user->ID, 'billing_city', true)),
+                'st'          => self::hash_user_data(get_user_meta($user->ID, 'billing_state', true)),
+                'zp'          => hash('sha256', get_user_meta($user->ID, 'billing_postcode', true)),
+                'country'     => self::hash_user_data(get_user_meta($user->ID, 'billing_country', true)),
+                'external_id' => (string) $user->ID,
+            );
+        } elseif (function_exists('WC') && 
+                 WC() && 
+                 property_exists(WC(), 'checkout') && 
+                 WC()->checkout && 
+                 function_exists('is_checkout') && 
+                 is_checkout() && 
+                 function_exists('is_order_received_page') && 
+                 !is_order_received_page() && 
+                 method_exists(WC()->checkout, 'get_posted_data') && 
+                 !empty(WC()->checkout->get_posted_data())) {
+            // Guest user on checkout page with filled-in data
+            $posted_data = WC()->checkout->get_posted_data();
+            $user_data = array(
+                'em'      => isset($posted_data['billing_email']) ? self::hash_user_data($posted_data['billing_email']) : null,
+                'ph'      => isset($posted_data['billing_phone']) ? self::hash_phone($posted_data['billing_phone']) : null,
+                'fn'      => isset($posted_data['billing_first_name']) ? self::hash_user_data($posted_data['billing_first_name']) : null,
+                'ln'      => isset($posted_data['billing_last_name']) ? self::hash_user_data($posted_data['billing_last_name']) : null,
+                'ct'      => isset($posted_data['billing_city']) ? self::hash_user_data($posted_data['billing_city']) : null,
+                'st'      => isset($posted_data['billing_state']) ? self::hash_user_data($posted_data['billing_state']) : null,
+                'zp'      => isset($posted_data['billing_postcode']) ? hash('sha256', $posted_data['billing_postcode']) : null,
+                'country' => isset($posted_data['billing_country']) ? self::hash_user_data($posted_data['billing_country']) : null,
+            );
         }
-        
-        return !empty($user_data) ? $user_data : null;
+
+        // Add client IP and User Agent if available
+        if (!empty($_SERVER['REMOTE_ADDR'])) {
+            $user_data['client_ip_address'] = self::get_client_ip();
+        }
+        if (!empty($_SERVER['HTTP_USER_AGENT'])) {
+            $user_data['client_user_agent'] = self::get_user_agent();
+        }
+
+        // Get Facebook Click ID and Browser ID from cookies
+        if (isset($_COOKIE['_fbp'])) {
+            $user_data['fbp'] = $_COOKIE['_fbp'];
+        }
+        if (isset($_COOKIE['_fbc'])) {
+            $user_data['fbc'] = $_COOKIE['_fbc'];
+        }
+
+        return array_filter($user_data);
     }
     
     /**
@@ -238,7 +274,7 @@ class Mauka_Meta_Pixel_Helpers {
     /**
      * Send CAPI event to Meta
      */
-    public static function send_capi_event($event_name, $event_data = array(), $custom_data = array()) {
+    public static function send_capi_event($event_name, $event_data = array(), $custom_data = array(), $order_id = null) {
         $plugin = mauka_meta_pixel();
         
         if (!$plugin || !$plugin->get_option('capi_enabled')) {
@@ -259,25 +295,9 @@ class Mauka_Meta_Pixel_Helpers {
             'event_time' => time(),
             'event_id' => isset($event_data['event_id']) ? $event_data['event_id'] : self::generate_event_id($event_name),
             'action_source' => 'website',
-            'event_source_url' => home_url(isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : ''),
-            'user_data' => array(
-                'client_ip_address' => self::get_client_ip(),
-                'client_user_agent' => self::get_user_agent(),
-                'fbp' => self::get_fbp(),
-            ),
+            'event_source_url' => home_url(add_query_arg(array(), $GLOBALS['wp']->request)),
+            'user_data' => self::get_user_data($order_id),
         );
-        
-        // Add fbc if available
-        $fbc = self::get_fbc();
-        if ($fbc) {
-            $event['user_data']['fbc'] = $fbc;
-        }
-        
-        // Add hashed user data
-        $user_data = self::get_user_data();
-        if ($user_data && is_array($user_data)) {
-            $event['user_data'] = array_merge($event['user_data'], $user_data);
-        }
         
         // Add custom data
         if (!empty($custom_data) && is_array($custom_data)) {
@@ -285,13 +305,13 @@ class Mauka_Meta_Pixel_Helpers {
         }
         
         // Prepare API request data
-        $api_url = "https://graph.facebook.com/v18.0/{$pixel_id}/events";
+        $api_url = "https://graph.facebook.com/v19.0/{$pixel_id}/events";
         $data = array(
             'data' => array($event),
             'access_token' => $access_token,
         );
         
-        // Add test event code at the request level (not in event data)
+        // Add test event code at the request level
         $test_mode = $plugin->get_option('test_mode');
         if ($test_mode) {
             $test_event_code = $plugin->get_option('test_event_code');

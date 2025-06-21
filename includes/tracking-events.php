@@ -30,12 +30,21 @@ class Mauka_Meta_Pixel_Tracking {
         if (class_exists('WooCommerce')) {
             // Product view
             add_action('woocommerce_single_product_summary', array($this, 'track_view_content'), 25);
+
+            // Category view
+            add_action('woocommerce_archive_description', array($this, 'track_view_category'));
+
+            // Add to Wishlist (YITH)
+            add_action('yith_wcwl_add_to_wishlist', array($this, 'track_add_to_wishlist'), 10, 2);
             
             // Add to cart
             add_action('woocommerce_add_to_cart', array($this, 'track_add_to_cart'), 10, 6);
             
             // Checkout started
             add_action('woocommerce_checkout_order_review', array($this, 'track_initiate_checkout'));
+
+            // Add Payment Info
+            add_action('woocommerce_review_order_before_payment', array($this, 'track_add_payment_info'));
             
             // Purchase completed
             add_action('woocommerce_thankyou', array($this, 'track_purchase'));
@@ -63,6 +72,13 @@ class Mauka_Meta_Pixel_Tracking {
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('PageView')) {
             return;
         }
+        // Skip AJAX requests and repeated loads on checkout page to avoid duplicates
+        if (defined('DOING_AJAX') && DOING_AJAX) {
+            return;
+        }
+        if (function_exists('is_checkout') && is_checkout() && ( !function_exists('is_order_received_page') || !is_order_received_page())) {
+            return;
+        }
         
         // Prevent multiple PageView events on same page load
         static $pageview_sent = false;
@@ -85,17 +101,27 @@ class Mauka_Meta_Pixel_Tracking {
      * Track ViewContent event (product pages)
      */
     public function track_view_content() {
-        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('ViewContent') || !is_product()) {
+        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('ViewContent') ||
+            (defined('DOING_AJAX') && DOING_AJAX) || 
+            !function_exists('is_product') || 
+            !is_product()) {
             return;
         }
         
         global $product;
         if (!$product) {
+            $product = wc_get_product(get_the_ID());
+        }
+        
+        if (!$product) {
             return;
         }
         
-        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('ViewContent', $product->get_id());
-        $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($product->get_id());
+        $product_id = $product->get_id();
+        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('ViewContent', $product_id);
+        
+        // Get product data
+        $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($product_id);
         
         // Add to page for pixel tracking
         $this->add_pixel_event('ViewContent', array(
@@ -108,7 +134,7 @@ class Mauka_Meta_Pixel_Tracking {
         ));
         
         // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('ViewContent', 
+        Mauka_Meta_Pixel_Helpers::send_capi_event('ViewContent',
             array('event_id' => $event_id),
             array(
                 'content_name' => $product_data['content_name'],
@@ -121,120 +147,229 @@ class Mauka_Meta_Pixel_Tracking {
     }
     
     /**
-     * Track AddToCart event
+     * Track ViewCategory event
      */
-    public function track_add_to_cart($cart_item_key, $product_id, $quantity, $variation_id, $variation, $cart_item_data) {
-        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('AddToCart')) {
+    public function track_view_category() {
+        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('ViewCategory') ||
+            (defined('DOING_AJAX') && DOING_AJAX) || 
+            !function_exists('is_product_category') || 
+            !is_product_category()) {
             return;
         }
-        
-        $actual_product_id = $variation_id ? $variation_id : $product_id;
-        $product = wc_get_product($actual_product_id);
-        
+
+        $term = get_queried_object();
+        if (!$term || !isset($term->term_id)) {
+            return;
+        }
+
+        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('ViewCategory', $term->term_id);
+
+        // Add to page for pixel tracking
+        $this->add_pixel_event('ViewCategory', array(
+            'event_id' => $event_id,
+            'content_name' => $term->name,
+            'content_category' => $term->name,
+            'content_type' => 'product_group',
+        ));
+
+        // Send CAPI event
+        Mauka_Meta_Pixel_Helpers::send_capi_event('ViewCategory',
+            array('event_id' => $event_id),
+            array(
+                'content_name' => $term->name,
+                'content_category' => $term->name,
+                'content_type' => 'product_group',
+            )
+        );
+    }
+
+    /**
+     * Track AddToWishlist event (YITH)
+     */
+    public function track_add_to_wishlist($product_id, $wishlist_id) {
+        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('AddToWishlist')) {
+            return;
+        }
+
+        $product = wc_get_product($product_id);
         if (!$product) {
             return;
         }
-        
-        // Prevent duplicate events for same product in short time
-        $cache_key = 'mauka_addtocart_' . $actual_product_id . '_' . $quantity;
-        if (get_transient($cache_key)) {
-            return; // Event already sent in last 30 seconds
-        }
-        set_transient($cache_key, true, 30); // Cache for 30 seconds
-        
-        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('AddToCart', $actual_product_id . '_' . $quantity . '_' . time());
-        $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($actual_product_id);
-        
-        $value = $product_data['value'] * $quantity;
-        
-        // Store event for pixel tracking (will be output in footer)
-        $this->store_pixel_event('AddToCart', array(
+
+        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('AddToWishlist', $product_id . '_' . $wishlist_id);
+        $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($product_id);
+
+        // Add to page for pixel tracking
+        $this->add_pixel_event('AddToWishlist', array(
             'event_id' => $event_id,
             'content_name' => $product_data['content_name'],
             'content_ids' => array($product_data['content_id']),
             'content_type' => 'product',
-            'value' => $value,
+            'value' => $product_data['value'],
             'currency' => $product_data['currency'],
         ));
-        
+
         // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('AddToCart',
+        Mauka_Meta_Pixel_Helpers::send_capi_event('AddToWishlist',
             array('event_id' => $event_id),
             array(
                 'content_name' => $product_data['content_name'],
                 'content_ids' => array($product_data['content_id']),
                 'content_type' => 'product',
-                'value' => $value,
+                'value' => $product_data['value'],
                 'currency' => $product_data['currency'],
             )
         );
     }
-    
+
     /**
-     * Track InitiateCheckout event
+     * Track AddPaymentInfo event
      */
-    public function track_initiate_checkout() {
-        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout') || !is_checkout()) {
+    public function track_add_payment_info() {
+        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('AddPaymentInfo') || 
+            !function_exists('is_checkout') || 
+            !is_checkout() || 
+            !function_exists('is_order_received_page') || 
+            is_order_received_page()) {
             return;
         }
-        
+
         // Prevent multiple triggers
         static $triggered = false;
         if ($triggered) {
             return;
         }
         $triggered = true;
-        
-        $cart = WC()->cart;
-        if (!$cart || $cart->is_empty()) {
+
+        if (!function_exists('WC') || !WC()->cart || !method_exists(WC()->cart, 'is_empty') || WC()->cart->is_empty()) {
             return;
         }
-        
-        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('InitiateCheckout', $cart->get_cart_hash());
-        
+
+        $cart = WC()->cart;
+        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('AddPaymentInfo', $cart->get_cart_hash());
+
         $content_ids = array();
         $contents = array();
-        $value = 0;
         
         foreach ($cart->get_cart() as $cart_item) {
             $product_id = $cart_item['variation_id'] ? $cart_item['variation_id'] : $cart_item['product_id'];
-            $product = wc_get_product($product_id);
-            
-            if ($product) {
-                $content_ids[] = (string) $product_id;
-                $contents[] = array(
-                    'id' => (string) $product_id,
-                    'quantity' => $cart_item['quantity'],
-                );
-                $value += $product->get_price() * $cart_item['quantity'];
-            }
+            $content_ids[] = (string) $product_id;
+            $contents[] = array(
+                'id' => (string) $product_id,
+                'quantity' => $cart_item['quantity'],
+            );
         }
-        
+
         // Add to page for pixel tracking
-        $this->add_pixel_event('InitiateCheckout', array(
+        $this->add_pixel_event('AddPaymentInfo', array(
             'event_id' => $event_id,
             'content_ids' => $content_ids,
             'contents' => $contents,
             'content_type' => 'product',
-            'value' => $value,
+            'value' => $cart->get_total('edit'),
             'currency' => get_woocommerce_currency(),
             'num_items' => $cart->get_cart_contents_count(),
         ));
-        
+
         // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('InitiateCheckout',
+        Mauka_Meta_Pixel_Helpers::send_capi_event('AddPaymentInfo',
             array('event_id' => $event_id),
             array(
                 'content_ids' => $content_ids,
                 'contents' => $contents,
                 'content_type' => 'product',
-                'value' => $value,
+                'value' => (float) $cart->get_total('edit'),
                 'currency' => get_woocommerce_currency(),
                 'num_items' => $cart->get_cart_contents_count(),
             )
         );
     }
-    
+
+    /**
+     * Track AddToCart event
+     */
+    public function track_add_to_cart($cart_item_key, $product_id, $quantity, $variation_id, $variation, $cart_item_data) {
+        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('AddToCart')) {
+            return;
+        }
+
+        $actual_product_id = $variation_id ? $variation_id : $product_id;
+        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('AddToCart', $actual_product_id . '_' . $quantity);
+
+        $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($actual_product_id);
+
+        // Add to page for pixel tracking
+        $this->add_pixel_event('AddToCart', array(
+            'event_id'     => $event_id,
+            'content_name' => $product_data['content_name'],
+            'content_ids'  => array($product_data['content_id']),
+            'content_type' => 'product',
+            'value'        => $product_data['value'] * $quantity,
+            'currency'     => $product_data['currency'],
+        ));
+
+        // Send CAPI event
+        Mauka_Meta_Pixel_Helpers::send_capi_event('AddToCart',
+            array('event_id' => $event_id),
+            array(
+                'content_name' => $product_data['content_name'],
+                'content_ids'  => array($product_data['content_id']),
+                'content_type' => 'product',
+                'value'        => $product_data['value'] * $quantity,
+                'currency'     => $product_data['currency'],
+            )
+        );
+    }
+
+    /**
+     * Helper to buffer pixel events for rendering in footer
+     */
+    private function add_pixel_event($event_name, $event_data = array()) {
+        add_filter('mauka_meta_pixel_events', function($events) use ($event_name, $event_data) {
+            $events[] = array(
+                'event_name' => $event_name,
+                'event_data' => $event_data,
+            );
+            return $events;
+        });
+    }
+
+    /**
+     * Track InitiateCheckout event
+     */
+    public function track_initiate_checkout() {
+        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout') || !function_exists('is_checkout') || !is_checkout() || (function_exists('is_order_received_page') && is_order_received_page())) {
+            return;
+        }
+        static $triggered = false;
+        if ($triggered) {
+            return;
+        }
+        $triggered = true;
+        if (!function_exists('WC') || !WC()->cart || !method_exists(WC()->cart, 'is_empty') || WC()->cart->is_empty()) {
+            return;
+        }
+        $cart = WC()->cart;
+        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('InitiateCheckout', $cart->get_cart_hash());
+        $content_ids = array();
+        $contents = array();
+        foreach ($cart->get_cart() as $item) {
+            $pid = $item['variation_id'] ? $item['variation_id'] : $item['product_id'];
+            $content_ids[] = (string) $pid;
+            $contents[] = array('id' => (string) $pid, 'quantity' => $item['quantity']);
+        }
+        $payload = array(
+            'content_ids' => $content_ids,
+            'contents' => $contents,
+            'content_type' => 'product',
+            'value' => (float) $cart->get_total('edit'),
+            'currency' => get_woocommerce_currency(),
+            'num_items' => $cart->get_cart_contents_count(),
+        );
+        $this->add_pixel_event('InitiateCheckout', array_merge(array('event_id' => $event_id), $payload));
+        Mauka_Meta_Pixel_Helpers::send_capi_event('InitiateCheckout', array('event_id' => $event_id), $payload);
+    }
+
     /**
      * Track Purchase event
      */
@@ -242,61 +377,34 @@ class Mauka_Meta_Pixel_Tracking {
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('Purchase') || !$order_id) {
             return;
         }
-        
         $order = wc_get_order($order_id);
         if (!$order) {
             return;
         }
-        
-        // Prevent duplicate tracking - HPOS compatible way
-        $tracked = $order->get_meta('_mauka_pixel_tracked', true);
-        if ($tracked) {
+        if ($order->get_meta('_mauka_pixel_tracked', true)) {
             return;
         }
-        
         $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Purchase', $order_id);
-        
-        $content_ids = array();
-        $contents = array();
-        
+        $content_ids = $contents = array();
         foreach ($order->get_items() as $item) {
-            $product_id = $item->get_variation_id() ? $item->get_variation_id() : $item->get_product_id();
-            $content_ids[] = (string) $product_id;
-            $contents[] = array(
-                'id' => (string) $product_id,
-                'quantity' => $item->get_quantity(),
-            );
+            $pid = $item->get_variation_id() ? $item->get_variation_id() : $item->get_product_id();
+            $content_ids[] = (string) $pid;
+            $contents[] = array('id' => (string) $pid, 'quantity' => $item->get_quantity());
         }
-        
-        // Add to page for pixel tracking
-        $this->add_pixel_event('Purchase', array(
-            'event_id' => $event_id,
+        $payload = array(
             'content_ids' => $content_ids,
             'contents' => $contents,
             'content_type' => 'product',
-            'value' => $order->get_total(),
+            'value' => (float) $order->get_total(),
             'currency' => $order->get_currency(),
             'num_items' => $order->get_item_count(),
-        ));
-        
-        // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('Purchase',
-            array('event_id' => $event_id),
-            array(
-                'content_ids' => $content_ids,
-                'contents' => $contents,
-                'content_type' => 'product',
-                'value' => (float) $order->get_total(),
-                'currency' => $order->get_currency(),
-                'num_items' => $order->get_item_count(),
-            )
         );
-        
-        // Mark as tracked - HPOS compatible way
+        $this->add_pixel_event('Purchase', array_merge(array('event_id' => $event_id), $payload));
+        Mauka_Meta_Pixel_Helpers::send_capi_event('Purchase', array('event_id' => $event_id), $payload, $order_id);
         $order->update_meta_data('_mauka_pixel_tracked', true);
         $order->save();
     }
-    
+
     /**
      * Track CompleteRegistration event
      */
@@ -304,57 +412,32 @@ class Mauka_Meta_Pixel_Tracking {
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('CompleteRegistration')) {
             return;
         }
-        
         $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('CompleteRegistration', $customer_id);
-        
-        // Store event for pixel tracking
-        $this->store_pixel_event('CompleteRegistration', array(
-            'event_id' => $event_id,
-        ));
-        
-        // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('CompleteRegistration',
-            array('event_id' => $event_id)
-        );
+        $this->add_pixel_event('CompleteRegistration', array('event_id' => $event_id, 'status' => 'registered'));
+        Mauka_Meta_Pixel_Helpers::send_capi_event('CompleteRegistration', array('event_id' => $event_id), array('status' => 'registered'), null, $customer_id);
     }
-    
+
     /**
      * Track Search event
      */
     public function track_search($query) {
-        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('Search') || !$query->is_search() || is_admin()) {
+        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('Search') || !function_exists('is_search') || !is_search() || !$query->is_main_query()) {
             return;
         }
-        
-        $search_query = get_search_query();
-        if (empty($search_query)) {
+        static $sent = false;
+        if ($sent) {
             return;
         }
-        
-        // Prevent multiple triggers
-        static $triggered = false;
-        if ($triggered) {
+        $sent = true;
+        $term = get_search_query();
+        if (!$term) {
             return;
         }
-        $triggered = true;
-        
-        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Search', $search_query);
-        
-        // Add to page for pixel tracking
-        $this->add_pixel_event('Search', array(
-            'event_id' => $event_id,
-            'search_string' => $search_query,
-        ));
-        
-        // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('Search',
-            array('event_id' => $event_id),
-            array(
-                'search_string' => $search_query,
-            )
-        );
+        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Search', md5($term));
+        $this->add_pixel_event('Search', array('event_id' => $event_id, 'search_string' => $term));
+        Mauka_Meta_Pixel_Helpers::send_capi_event('Search', array('event_id' => $event_id), array('search_string' => $term));
     }
-    
+
     /**
      * Track Contact Form 7 Lead
      */
@@ -362,120 +445,22 @@ class Mauka_Meta_Pixel_Tracking {
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('Lead')) {
             return;
         }
-        
-        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Lead', 'cf7_' . $contact_form->id());
-        
-        // Store event for pixel tracking
-        $this->store_pixel_event('Lead', array(
-            'event_id' => $event_id,
-        ));
-        
-        // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('Lead',
-            array('event_id' => $event_id)
-        );
+        $form_id = $contact_form->id();
+        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Lead', 'cf7_' . $form_id);
+        $this->add_pixel_event('Lead', array('event_id' => $event_id, 'content_name' => 'Contact Form: ' . $form_id));
+        Mauka_Meta_Pixel_Helpers::send_capi_event('Lead', array('event_id' => $event_id), array('content_name' => 'Contact Form: ' . $form_id));
     }
-    
+
     /**
-     * Track Gravity Forms Lead
+     * Track Gravity Form Lead
      */
     public function track_gravity_form_lead($entry, $form) {
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('Lead')) {
             return;
         }
-        
-        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Lead', 'gf_' . $form['id'] . '_' . $entry['id']);
-        
-        // Store event for pixel tracking
-        $this->store_pixel_event('Lead', array(
-            'event_id' => $event_id,
-        ));
-        
-        // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('Lead',
-            array('event_id' => $event_id)
-        );
-    }
-    
-    /**
-     * Handle AJAX add to cart
-     */
-    public function ajax_add_to_cart() {
-        // This will be called after the regular add_to_cart hook
-        // The event is already tracked by the regular hook
-    }
-    
-    /**
-     * Add pixel event to page (immediate output)
-     */
-    private function add_pixel_event($event_name, $event_data = array()) {
-        $plugin = mauka_meta_pixel();
-        $pixel_id = $plugin->get_option('pixel_id');
-        
-        if (empty($pixel_id) || !$plugin->get_option('pixel_enabled', false)) {
-            return;
-        }
-        
-        echo "<script type='text/javascript'>";
-        echo "if (typeof fbq !== 'undefined') {";
-        echo "fbq('track', '" . esc_js($event_name) . "'";
-        
-        if (!empty($event_data)) {
-            echo ", " . json_encode($event_data);
-        }
-        
-        echo ");";
-        echo "}";
-        echo "</script>";
-    }
-    
-    /**
-     * Store pixel event for later output (for events triggered before footer)
-     */
-    private function store_pixel_event($event_name, $event_data = array()) {
-        if (!isset($GLOBALS['mauka_pixel_events'])) {
-            $GLOBALS['mauka_pixel_events'] = array();
-            add_action('wp_footer', array($this, 'output_stored_pixel_events'), 999);
-        }
-        
-        $GLOBALS['mauka_pixel_events'][] = array(
-            'name' => $event_name,
-            'data' => $event_data,
-        );
-    }
-    
-    /**
-     * Output stored pixel events in footer
-     */
-    public function output_stored_pixel_events() {
-        if (empty($GLOBALS['mauka_pixel_events'])) {
-            return;
-        }
-        
-        $plugin = mauka_meta_pixel();
-        $pixel_id = $plugin->get_option('pixel_id');
-        
-        if (empty($pixel_id) || !$plugin->get_option('pixel_enabled', false)) {
-            return;
-        }
-        
-        echo "<script type='text/javascript'>";
-        echo "if (typeof fbq !== 'undefined') {";
-        
-        foreach ($GLOBALS['mauka_pixel_events'] as $event) {
-            echo "fbq('track', '" . esc_js($event['name']) . "'";
-            
-            if (!empty($event['data'])) {
-                echo ", " . json_encode($event['data']);
-            }
-            
-            echo ");";
-        }
-        
-        echo "}";
-        echo "</script>";
-        
-        // Clear events after output
-        $GLOBALS['mauka_pixel_events'] = array();
+        $form_id = $form['id'];
+        $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Lead', 'gf_' . $form_id . '_' . $entry['id']);
+        $this->add_pixel_event('Lead', array('event_id' => $event_id, 'content_name' => 'Gravity Form: ' . $form['title']));
+        Mauka_Meta_Pixel_Helpers::send_capi_event('Lead', array('event_id' => $event_id), array('content_name' => 'Gravity Form: ' . $form['title']));
     }
 }
