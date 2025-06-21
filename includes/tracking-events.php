@@ -76,6 +76,9 @@ class Mauka_Meta_Pixel_Tracking {
         if (defined('DOING_AJAX') && DOING_AJAX) {
             return;
         }
+        if (defined('WC_DOING_AJAX') && WC_DOING_AJAX) {
+            return;
+        }
         if (function_exists('is_checkout') && is_checkout() && ( !function_exists('is_order_received_page') || !is_order_received_page())) {
             return;
         }
