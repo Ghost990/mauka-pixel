@@ -130,29 +130,34 @@ class Mauka_Meta_Pixel_Tracking {
         // Get product data
         $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($product_id);
         
+        // Build contents array with item_price for better match quality
+        $contents = array(
+            array(
+                'id' => $product_data['content_id'],
+                'quantity' => 1,
+                'item_price' => $product_data['value'],
+            ),
+        );
+        
         // Enhanced data for better CAPI coverage and event matching
         $enhanced_data = array(
             'content_name' => $product_data['content_name'],
             'content_ids' => array($product_data['content_id']),
             'content_type' => 'product',
+            'contents' => $contents,
             'value' => $product_data['value'],
             'currency' => $product_data['currency'],
         );
         
-        // Add optional fields if enhanced catalog matching is enabled
-        $plugin = mauka_meta_pixel();
-        $enhanced_matching = $plugin ? $plugin->get_option('enhanced_catalog_matching', false) : false;
-        
-        if ($enhanced_matching) {
-            if (!empty($product_data['content_category'])) {
-                $enhanced_data['content_category'] = $product_data['content_category'];
-            }
-            if (!empty($product_data['brand'])) {
-                $enhanced_data['brand'] = $product_data['brand'];
-            }
-            if (!empty($product_data['availability'])) {
-                $enhanced_data['availability'] = $product_data['availability'];
-            }
+        // Always include these fields for better matching regardless of enhanced_catalog_matching setting
+        if (!empty($product_data['content_category'])) {
+            $enhanced_data['content_category'] = $product_data['content_category'];
+        }
+        if (!empty($product_data['brand'])) {
+            $enhanced_data['brand'] = $product_data['brand'];
+        }
+        if (!empty($product_data['availability'])) {
+            $enhanced_data['availability'] = $product_data['availability'];
         }
         
         // Add to page for pixel tracking
@@ -340,15 +345,6 @@ class Mauka_Meta_Pixel_Tracking {
 
         $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($actual_product_id);
 
-        // Enhanced data for better CAPI coverage and event matching
-        $enhanced_data = array(
-            'content_name' => $product_data['content_name'],
-            'content_ids'  => array($product_data['content_id']),
-            'content_type' => 'product',
-            'value'        => $product_data['value'] * $quantity,
-            'currency'     => $product_data['currency'],
-        );
-
         // Build contents with item_price for better match quality
         $contents = array(
             array(
@@ -358,20 +354,26 @@ class Mauka_Meta_Pixel_Tracking {
             ),
         );
 
-        // Add optional fields if enhanced catalog matching is enabled
-        $plugin = mauka_meta_pixel();
-        $enhanced_matching = $plugin ? $plugin->get_option('enhanced_catalog_matching', false) : false;
-        
-        if ($enhanced_matching) {
-            if (!empty($product_data['content_category'])) {
-                $enhanced_data['content_category'] = $product_data['content_category'];
-            }
-            if (!empty($product_data['brand'])) {
-                $enhanced_data['brand'] = $product_data['brand'];
-            }
-            if (!empty($product_data['availability'])) {
-                $enhanced_data['availability'] = $product_data['availability'];
-            }
+        // Enhanced data for better CAPI coverage and event matching
+        $enhanced_data = array(
+            'content_name' => $product_data['content_name'],
+            'content_ids'  => array($product_data['content_id']),
+            'content_type' => 'product',
+            'contents'     => $contents,
+            'value'        => $product_data['value'] * $quantity,
+            'currency'     => $product_data['currency'],
+            'num_items'    => $quantity,
+        );
+
+        // Always include these fields for better matching regardless of enhanced_catalog_matching setting
+        if (!empty($product_data['content_category'])) {
+            $enhanced_data['content_category'] = $product_data['content_category'];
+        }
+        if (!empty($product_data['brand'])) {
+            $enhanced_data['brand'] = $product_data['brand'];
+        }
+        if (!empty($product_data['availability'])) {
+            $enhanced_data['availability'] = $product_data['availability'];
         }
 
         // Add to page for pixel tracking
@@ -380,10 +382,10 @@ class Mauka_Meta_Pixel_Tracking {
             $enhanced_data
         ));
 
-        // Send CAPI event with enhanced data and contents for better matching
+        // Send CAPI event with enhanced data for better matching
         Mauka_Meta_Pixel_Helpers::send_capi_event('AddToCart',
             array('event_id' => $event_id),
-            array_merge($enhanced_data, array('contents' => $contents)),
+            $enhanced_data,
             null,
             $event_time
         );
@@ -423,11 +425,21 @@ class Mauka_Meta_Pixel_Tracking {
         $event_time = time();
         $content_ids = array();
         $contents = array();
-        foreach ($cart->get_cart() as $item) {
-            $pid = $item['variation_id'] ? $item['variation_id'] : $item['product_id'];
-            $content_ids[] = (string) $pid;
-            $contents[] = array('id' => (string) $pid, 'quantity' => $item['quantity'], 'item_price' => ( isset($item['data']) && method_exists($item['data'], 'get_price') ) ? (float) $item['data']->get_price() : 0);
+        
+        // Use enhanced product data for better catalog matching
+        foreach ($cart->get_cart() as $cart_item) {
+            $product_id = $cart_item['variation_id'] ? $cart_item['variation_id'] : $cart_item['product_id'];
+            $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($product_id);
+            
+            $content_ids[] = $product_data['content_id'];
+            $contents[] = array(
+                'id' => $product_data['content_id'],
+                'quantity' => $cart_item['quantity'],
+                'item_price' => ( isset($cart_item['data']) && method_exists($cart_item['data'], 'get_price') ) ? (float) $cart_item['data']->get_price() : 0,
+            );
         }
+        
+        // Enhanced data for better CAPI coverage and event matching
         $payload = array(
             'content_ids' => $content_ids,
             'contents' => $contents,
@@ -436,8 +448,31 @@ class Mauka_Meta_Pixel_Tracking {
             'currency' => get_woocommerce_currency(),
             'num_items' => $cart->get_cart_contents_count(),
         );
-        $this->add_pixel_event('InitiateCheckout', array_merge(array('event_id' => $event_id), $payload));
-        Mauka_Meta_Pixel_Helpers::send_capi_event('InitiateCheckout', array('event_id' => $event_id), $payload, null, $event_time);
+        
+        // Add optional fields for better matching
+        $first_item = reset($cart->get_cart());
+        if ($first_item) {
+            $product_id = $first_item['variation_id'] ? $first_item['variation_id'] : $first_item['product_id'];
+            $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($product_id);
+            
+            if (!empty($product_data['content_category'])) {
+                $payload['content_category'] = $product_data['content_category'];
+            }
+        }
+        
+        // Add to page for pixel tracking
+        $this->add_pixel_event('InitiateCheckout', array_merge(
+            array('event_id' => $event_id),
+            $payload
+        ));
+        
+        // Send CAPI event with enhanced data for better matching
+        Mauka_Meta_Pixel_Helpers::send_capi_event('InitiateCheckout', 
+            array('event_id' => $event_id), 
+            $payload, 
+            null, 
+            $event_time
+        );
     }
 
     /**

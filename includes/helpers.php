@@ -135,6 +135,8 @@ class Mauka_Meta_Pixel_Helpers {
                         'st'      => self::hash_user_data($order->get_billing_state()),
                         'zp'      => hash('sha256', $order->get_billing_postcode()),
                         'country' => self::hash_user_data($order->get_billing_country()),
+                        'gender'  => self::hash_user_data(get_post_meta($order_id, '_billing_gender', true)),
+                        'db'      => self::hash_user_data(get_post_meta($order_id, '_billing_birth_date', true)),
                     );
                 }
             }
@@ -156,6 +158,8 @@ class Mauka_Meta_Pixel_Helpers {
                 'zp'          => hash('sha256', get_user_meta($user->ID, 'billing_postcode', true)),
                 'country'     => self::hash_user_data(get_user_meta($user->ID, 'billing_country', true)),
                 'external_id' => (string) $user->ID,
+                'gender'      => self::hash_user_data(get_user_meta($user->ID, 'billing_gender', true)),
+                'db'          => self::hash_user_data(get_user_meta($user->ID, 'billing_birth_date', true)),
             );
         } elseif (function_exists('WC') && 
                  WC() && 
@@ -178,6 +182,8 @@ class Mauka_Meta_Pixel_Helpers {
                 'st'      => isset($posted_data['billing_state']) ? self::hash_user_data($posted_data['billing_state']) : null,
                 'zp'      => isset($posted_data['billing_postcode']) ? hash('sha256', $posted_data['billing_postcode']) : null,
                 'country' => isset($posted_data['billing_country']) ? self::hash_user_data($posted_data['billing_country']) : null,
+                'gender'  => isset($posted_data['billing_gender']) ? self::hash_user_data($posted_data['billing_gender']) : null,
+                'db'      => isset($posted_data['billing_birth_date']) ? self::hash_user_data($posted_data['billing_birth_date']) : null,
             );
         }
 
@@ -195,6 +201,14 @@ class Mauka_Meta_Pixel_Helpers {
         }
         if (isset($_COOKIE['_fbc'])) {
             $user_data['fbc'] = $_COOKIE['_fbc'];
+        }
+        
+        // Get Facebook Login ID if available
+        if (function_exists('get_user_meta') && isset($user) && $user && $user->ID) {
+            $fb_login_id = get_user_meta($user->ID, 'facebook_login_id', true);
+            if (!empty($fb_login_id)) {
+                $user_data['fb_login_id'] = $fb_login_id;
+            }
         }
 
         return array_filter($user_data);
@@ -464,10 +478,13 @@ class Mauka_Meta_Pixel_Helpers {
             'ViewContent' => 'track_viewcontent', 
             'AddToCart' => 'track_addtocart',
             'InitiateCheckout' => 'track_initiatecheckout',
+            'AddPaymentInfo' => 'track_addpaymentinfo',
             'Purchase' => 'track_purchase',
             'Lead' => 'track_lead',
             'CompleteRegistration' => 'track_completeregistration',
             'Search' => 'track_search',
+            'ViewCategory' => 'track_viewcategory',
+            'AddToWishlist' => 'track_addtowishlist',
         );
         
         $option_key = isset($option_map[$event_name]) ? $option_map[$event_name] : null;
