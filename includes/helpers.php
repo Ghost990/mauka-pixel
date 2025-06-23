@@ -274,7 +274,7 @@ class Mauka_Meta_Pixel_Helpers {
     /**
      * Send CAPI event to Meta
      */
-    public static function send_capi_event($event_name, $event_data = array(), $custom_data = array(), $order_id = null) {
+    public static function send_capi_event($event_name, $event_data = array(), $custom_data = array(), $order_id = null, $event_time = null) {
         $plugin = mauka_meta_pixel();
         
         if (!$plugin || !$plugin->get_option('capi_enabled')) {
@@ -289,10 +289,15 @@ class Mauka_Meta_Pixel_Helpers {
             return false;
         }
         
+        // Use provided event_time or current time
+        if ($event_time === null) {
+            $event_time = time();
+        }
+        
         // Prepare event data
         $event = array(
             'event_name' => $event_name,
-            'event_time' => time(),
+            'event_time' => $event_time,
             'event_id' => isset($event_data['event_id']) ? $event_data['event_id'] : self::generate_event_id($event_name),
             'action_source' => 'website',
             'event_source_url' => home_url(add_query_arg(array(), $GLOBALS['wp']->request)),
@@ -320,30 +325,47 @@ class Mauka_Meta_Pixel_Helpers {
             }
         }
         
-        // Send request
-        $response = wp_remote_post($api_url, array(
-            'timeout' => 30,
-            'headers' => array(
-                'Content-Type' => 'application/json',
-            ),
-            'body' => json_encode($data),
-        ));
+        // Send request with retry logic for better CAPI coverage
+        $max_retries = 2;
+        $retry_count = 0;
         
-        if (is_wp_error($response)) {
-            self::log('CAPI event failed: ' . $response->get_error_message(), 'error');
-            return false;
-        }
-        
-        $response_code = wp_remote_retrieve_response_code($response);
-        $response_body = wp_remote_retrieve_body($response);
-        
-        if ($response_code === 200) {
-            self::log("CAPI event sent successfully: {$event_name} (ID: {$event['event_id']})", 'info');
-            return true;
-        } else {
-            self::log("CAPI event failed: HTTP {$response_code} - {$response_body}", 'error');
-            return false;
-        }
+        do {
+            $response = wp_remote_post($api_url, array(
+                'timeout' => 30,
+                'headers' => array(
+                    'Content-Type' => 'application/json',
+                ),
+                'body' => json_encode($data),
+            ));
+            
+            if (is_wp_error($response)) {
+                $retry_count++;
+                if ($retry_count <= $max_retries) {
+                    // Wait before retry (exponential backoff)
+                    sleep(pow(2, $retry_count - 1));
+                    continue;
+                }
+                self::log('CAPI event failed after ' . $max_retries . ' retries: ' . $response->get_error_message(), 'error');
+                return false;
+            }
+            
+            $response_code = wp_remote_retrieve_response_code($response);
+            $response_body = wp_remote_retrieve_body($response);
+            
+            if ($response_code === 200) {
+                self::log("CAPI event sent successfully: {$event_name} (ID: {$event['event_id']})", 'info');
+                return true;
+            } else if ($response_code >= 500 && $retry_count < $max_retries) {
+                // Retry on server errors
+                $retry_count++;
+                self::log("CAPI event failed with HTTP {$response_code}, retrying ({$retry_count}/{$max_retries})", 'warning');
+                sleep(pow(2, $retry_count - 1));
+                continue;
+            } else {
+                self::log("CAPI event failed: HTTP {$response_code} - {$response_body}", 'error');
+                return false;
+            }
+        } while ($retry_count <= $max_retries);
     }
     
     /**
@@ -374,13 +396,31 @@ class Mauka_Meta_Pixel_Helpers {
             return array();
         }
         
+        // Get user's content ID format preference
+        $plugin = mauka_meta_pixel();
+        $content_id_format = $plugin ? $plugin->get_option('content_id_format', 'sku_fallback') : 'sku_fallback';
+        
+        // Generate content_id based on user preference
+        if ($content_id_format === 'product_id') {
+            $content_id = (string) $product_id;
+        } else {
+            // Default: SKU with fallback to product ID (sku_fallback)
+            $content_id = $product->get_sku();
+            if (empty($content_id)) {
+                $content_id = (string) $product_id;
+            }
+        }
+        
         return array(
-            'content_id' => (string) $product_id,
+            'content_id' => $content_id,
             'content_name' => $product->get_name(),
             'content_type' => 'product',
             'content_category' => self::get_product_categories($product),
             'value' => self::format_price($product->get_price()),
             'currency' => function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'USD',
+            // Add additional fields that help with catalog matching
+            'brand' => self::get_product_brand($product),
+            'availability' => $product->is_in_stock() ? 'in stock' : 'out of stock',
         );
     }
     
@@ -394,6 +434,19 @@ class Mauka_Meta_Pixel_Helpers {
         
         $categories = wp_get_post_terms($product->get_id(), 'product_cat', array('fields' => 'names'));
         return is_array($categories) ? implode(', ', $categories) : '';
+    }
+    
+    /**
+     * Get product brand
+     */
+    public static function get_product_brand($product) {
+        if (!$product) {
+            return '';
+        }
+        
+        // Assuming brand is stored in a custom attribute called 'brand'
+        $brand = $product->get_attribute('brand');
+        return $brand ? $brand : '';
     }
     
     /**

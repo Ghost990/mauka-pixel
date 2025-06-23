@@ -259,6 +259,54 @@ class Mauka_Meta_Pixel_Admin {
                                         </tbody>
                                     </table>
                                     
+                                    <!-- Catalog Optimization -->
+                                    <h3><?php _e('Katalógus Optimalizálás', 'mauka-meta-pixel'); ?></h3>
+                                    <table class="form-table" role="presentation">
+                                        <tbody>
+                                            <tr>
+                                                <th scope="row">
+                                                    <?php _e('Content ID Formátum', 'mauka-meta-pixel'); ?>
+                                                </th>
+                                                <td>
+                                                    <fieldset>
+                                                        <label>
+                                                            <input type="radio" name="mauka_meta_pixel_options[content_id_format]" value="sku_fallback" 
+                                                                   <?php checked($options['content_id_format'], 'sku_fallback'); ?> />
+                                                            <strong><?php _e('SKU (ajánlott)', 'mauka-meta-pixel'); ?></strong>
+                                                        </label>
+                                                        <p class="description">
+                                                            <?php _e('SKU használata elsődlegesen, termék ID fallback-ként. Jobb katalógus egyezés.', 'mauka-meta-pixel'); ?>
+                                                        </p>
+                                                        <br>
+                                                        <label>
+                                                            <input type="radio" name="mauka_meta_pixel_options[content_id_format]" value="product_id" 
+                                                                   <?php checked($options['content_id_format'], 'product_id'); ?> />
+                                                            <strong><?php _e('Termék ID', 'mauka-meta-pixel'); ?></strong>
+                                                        </label>
+                                                        <p class="description">
+                                                            <?php _e('Mindig a WooCommerce termék ID használata.', 'mauka-meta-pixel'); ?>
+                                                        </p>
+                                                    </fieldset>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <th scope="row">
+                                                    <?php _e('Továbbfejlesztett Katalógus Egyeztetés', 'mauka-meta-pixel'); ?>
+                                                </th>
+                                                <td>
+                                                    <label>
+                                                        <input type="checkbox" name="mauka_meta_pixel_options[enhanced_catalog_matching]" value="1" 
+                                                               <?php checked($options['enhanced_catalog_matching']); ?> />
+                                                        <strong><?php _e('Továbbfejlesztett adatok küldése (ajánlott)', 'mauka-meta-pixel'); ?></strong>
+                                                    </label>
+                                                    <p class="description">
+                                                        <?php _e('További termék adatok küldése (márka, elérhetőség, kategória) a jobb katalógus egyezés érdekében.', 'mauka-meta-pixel'); ?>
+                                                    </p>
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                    
                                     <!-- Logging -->
                                     <h3><?php _e('Naplózás', 'mauka-meta-pixel'); ?></h3>
                                     <table class="form-table" role="presentation">
@@ -358,12 +406,15 @@ class Mauka_Meta_Pixel_Admin {
             'track_pageview', 'track_viewcontent', 'track_addtocart', 
             'track_initiatecheckout', 'track_purchase', 'track_lead', 
             'track_completeregistration', 'track_search', 'track_viewcategory',
-            'track_addtowishlist', 'track_addpaymentinfo'
+            'track_addtowishlist', 'track_addpaymentinfo', 'enhanced_catalog_matching'
         );
         
         foreach ($boolean_fields as $field) {
             $sanitized[$field] = isset($input[$field]) && $input[$field] == '1';
         }
+        
+        // Content ID format
+        $sanitized['content_id_format'] = isset($input['content_id_format']) ? sanitize_text_field($input['content_id_format']) : '';
         
         // Merge with defaults
         $defaults = array(
@@ -384,7 +435,9 @@ class Mauka_Meta_Pixel_Admin {
             'track_addpaymentinfo' => true,
             'pixel_id' => '',
             'access_token' => '',
-            'test_event_code' => ''
+            'test_event_code' => '',
+            'content_id_format' => 'sku_fallback',
+            'enhanced_catalog_matching' => false
         );
         
         $final_options = array_merge($defaults, $sanitized);
@@ -444,7 +497,7 @@ class Mauka_Meta_Pixel_Admin {
                 // Send clean test event without test_event_code
                 $test_result = Mauka_Meta_Pixel_Helpers::send_capi_event('PageView', array(
                     'event_id' => 'test_connection_' . time(),
-                ));
+                ), array(), null, time());
                 
                 // Restore original test mode
                 $plugin->update_option('test_mode', $original_test_mode);
