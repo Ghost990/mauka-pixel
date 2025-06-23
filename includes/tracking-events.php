@@ -69,6 +69,7 @@ class Mauka_Meta_Pixel_Tracking {
      * Track PageView event
      */
     public function track_page_view() {
+        if ( $this->should_skip_request() ) { return; }
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('PageView')) {
             return;
         }
@@ -104,6 +105,7 @@ class Mauka_Meta_Pixel_Tracking {
      * Track ViewContent event (product pages)
      */
     public function track_view_content() {
+        if ( $this->should_skip_request() ) { return; }
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('ViewContent') ||
             (defined('DOING_AJAX') && DOING_AJAX) || 
             !function_exists('is_product') || 
@@ -153,6 +155,7 @@ class Mauka_Meta_Pixel_Tracking {
      * Track ViewCategory event
      */
     public function track_view_category() {
+        if ( $this->should_skip_request() ) { return; }
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('ViewCategory') ||
             (defined('DOING_AJAX') && DOING_AJAX) || 
             !function_exists('is_product_category') || 
@@ -229,6 +232,7 @@ class Mauka_Meta_Pixel_Tracking {
      * Track AddPaymentInfo event
      */
     public function track_add_payment_info() {
+        if ( $this->should_skip_request() ) { return; }
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('AddPaymentInfo') || 
             !function_exists('is_checkout') || 
             !is_checkout() || 
@@ -293,6 +297,7 @@ class Mauka_Meta_Pixel_Tracking {
      * Track AddToCart event
      */
     public function track_add_to_cart($cart_item_key, $product_id, $quantity, $variation_id, $variation, $cart_item_data) {
+        if ( $this->should_skip_request() ) { return; }
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('AddToCart')) {
             return;
         }
@@ -352,6 +357,7 @@ class Mauka_Meta_Pixel_Tracking {
      * Track InitiateCheckout event
      */
     public function track_initiate_checkout() {
+        if ( $this->should_skip_request() ) { return; }
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout') || !function_exists('is_checkout') || !is_checkout() || (function_exists('is_order_received_page') && is_order_received_page())) {
             return;
         }
@@ -419,6 +425,17 @@ class Mauka_Meta_Pixel_Tracking {
         Mauka_Meta_Pixel_Helpers::send_capi_event('Purchase', array('event_id' => $event_id), $payload, $order_id);
         $order->update_meta_data('_mauka_pixel_tracked', true);
         $order->save();
+    }
+
+    /**
+     * Determine whether current request context should be ignored for tracking
+     */
+    private function should_skip_request() {
+        return ( is_admin() ||
+            ( defined('DOING_CRON') && DOING_CRON ) ||
+            ( defined('DOING_AJAX') && DOING_AJAX ) ||
+            ( defined('WC_DOING_AJAX') && WC_DOING_AJAX ) ||
+            ( function_exists('wp_doing_rest') && wp_doing_rest() ) );
     }
 
     /**
