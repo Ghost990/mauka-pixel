@@ -86,7 +86,9 @@ class Mauka_Meta_Pixel {
             'track_addpaymentinfo' => true,
             'pixel_id' => '',
             'access_token' => '',
-            'test_event_code' => ''
+            'test_event_code' => '',
+            'content_id_format' => 'sku_fallback',
+            'enhanced_catalog_matching' => false
         );
         
         $stored_options = get_option('mauka_meta_pixel_options', array());
@@ -249,12 +251,19 @@ class Mauka_Meta_Pixel {
             'pixel_enabled', 'capi_enabled', 'test_mode', 'enable_logging',
             'track_pageview', 'track_viewcontent', 'track_addtocart', 'track_initiatecheckout',
             'track_purchase', 'track_lead', 'track_completeregistration', 'track_search',
-            'track_viewcategory', 'track_addtowishlist', 'track_addpaymentinfo'
+            'track_viewcategory', 'track_addtowishlist', 'track_addpaymentinfo',
+            'enhanced_catalog_matching'
         );
         
         foreach ($boolean_fields as $field) {
             $sanitized[$field] = isset($input[$field]) && $input[$field] == '1';
         }
+        
+        // Handle content_id_format separately (not a boolean)
+        $valid_formats = array('sku_fallback', 'product_id');
+        $sanitized['content_id_format'] = isset($input['content_id_format']) && in_array($input['content_id_format'], $valid_formats) 
+            ? sanitize_text_field($input['content_id_format']) 
+            : 'sku_fallback';
         
         // Merge with defaults to ensure all keys exist
         $defaults = array(
@@ -275,7 +284,9 @@ class Mauka_Meta_Pixel {
             'track_addpaymentinfo' => true,
             'pixel_id' => '',
             'access_token' => '',
-            'test_event_code' => ''
+            'test_event_code' => '',
+            'content_id_format' => 'sku_fallback',
+            'enhanced_catalog_matching' => false
         );
         
         return array_merge($defaults, $sanitized);
@@ -338,7 +349,9 @@ class Mauka_Meta_Pixel {
                 'track_addpaymentinfo' => true,
                 'pixel_id' => '',
                 'access_token' => '',
-                'test_event_code' => ''
+                'test_event_code' => '',
+                'content_id_format' => 'sku_fallback',
+                'enhanced_catalog_matching' => false
             );
             
             add_option('mauka_meta_pixel_options', $default_options);

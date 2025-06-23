@@ -413,8 +413,11 @@ class Mauka_Meta_Pixel_Admin {
             $sanitized[$field] = isset($input[$field]) && $input[$field] == '1';
         }
         
-        // Content ID format
-        $sanitized['content_id_format'] = isset($input['content_id_format']) ? sanitize_text_field($input['content_id_format']) : '';
+        // Content ID format with validation
+        $valid_formats = array('sku_fallback', 'product_id');
+        $sanitized['content_id_format'] = isset($input['content_id_format']) && in_array($input['content_id_format'], $valid_formats) 
+            ? sanitize_text_field($input['content_id_format']) 
+            : 'sku_fallback';
         
         // Merge with defaults
         $defaults = array(
