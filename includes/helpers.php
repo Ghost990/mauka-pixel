@@ -490,4 +490,4 @@ class Mauka_Meta_Pixel_Helpers {
         $option_key = isset($option_map[$event_name]) ? $option_map[$event_name] : null;
         return $option_key ? $plugin->get_option($option_key, true) : false;
     }
-}
+} 
