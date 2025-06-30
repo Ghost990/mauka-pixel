@@ -43,8 +43,10 @@ class Mauka_Meta_Pixel_Tracking {
             // Add to cart
             add_action('woocommerce_add_to_cart', array($this, 'track_add_to_cart'), 10, 6);
             
-            // InitiateCheckout event - use same approach as AddPaymentInfo
+            // InitiateCheckout event - multiple hooks to ensure it fires
             add_action('woocommerce_review_order_before_payment', array($this, 'track_initiate_checkout'), 1); // Priority 1 to fire BEFORE AddPaymentInfo
+            add_action('woocommerce_before_checkout_form', array($this, 'track_initiate_checkout'), 10); // Earlier hook in checkout process
+            add_action('woocommerce_checkout_before_customer_details', array($this, 'track_initiate_checkout'), 10); // Another early hook
             
             // Debug: Confirm hook registration
             if (function_exists('wp_footer')) {
@@ -521,7 +523,7 @@ class Mauka_Meta_Pixel_Tracking {
      */
     public function track_initiate_checkout() {
         // Add console debugging for deployment server testing
-        echo '<script>console.log("MAUKA DEBUG: track_initiate_checkout() called");</script>';
+        echo '<script>console.log("MAUKA DEBUG: track_initiate_checkout() called at "+new Date().toISOString());</script>';
         
         Mauka_Meta_Pixel_Helpers::log("InitiateCheckout: Starting event tracking", 'debug');
         
@@ -542,16 +544,33 @@ class Mauka_Meta_Pixel_Tracking {
             return;
         }
 
-        // Prevent multiple triggers
+        // Prevent multiple triggers using static variable for current request
         static $triggered = false;
         if ($triggered) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: already triggered", 'debug');
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: already triggered in this request", 'debug');
+            echo '<script>console.log("MAUKA DEBUG: InitiateCheckout skipped - already triggered in this request");</script>';
             return;
         }
         $triggered = true;
+        
+        // Also check for session-based tracking if WC session is available
+        if (function_exists('WC') && WC()->session) {
+            $session_id = WC()->session->get_customer_id();
+            $transient_key = 'mauka_initiate_checkout_' . md5($session_id . date('Y-m-d-H'));
+            
+            if (get_transient($transient_key)) {
+                Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: already triggered in this session", 'debug');
+                echo '<script>console.log("MAUKA DEBUG: InitiateCheckout skipped - already triggered in this session");</script>';
+                return;
+            }
+            
+            // Set transient for 1 hour to prevent duplicate events in the same session
+            set_transient($transient_key, true, 3600); // 3600 seconds = 1 hour
+        }
 
         if (!function_exists('WC') || !WC()->cart || !method_exists(WC()->cart, 'is_empty') || WC()->cart->is_empty()) {
             Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: cart empty", 'debug');
+            echo '<script>console.log("MAUKA DEBUG: InitiateCheckout skipped - cart empty");</script>';
             return;
         }
 
@@ -616,36 +635,43 @@ class Mauka_Meta_Pixel_Tracking {
     public function track_purchase($order_id) {
         // Add detailed debugging
         Mauka_Meta_Pixel_Helpers::log("Attempting to track purchase for order ID: {$order_id}", 'debug');
+        echo '<script>console.log("MAUKA DEBUG: track_purchase() called for order ID: ' . esc_js($order_id) . ' at "+new Date().toISOString());</script>';
         
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('Purchase')) {
             Mauka_Meta_Pixel_Helpers::log("Purchase event tracking is disabled in settings", 'debug');
+            echo '<script>console.log("MAUKA DEBUG: Purchase event tracking is disabled in settings");</script>';
             return;
         }
         
         if (!$order_id) {
             Mauka_Meta_Pixel_Helpers::log("No order ID provided for purchase tracking", 'debug');
+            echo '<script>console.log("MAUKA DEBUG: No order ID provided for purchase tracking");</script>';
             return;
         }
         
         $order = wc_get_order($order_id);
         if (!$order) {
             Mauka_Meta_Pixel_Helpers::log("Order {$order_id} not found", 'error');
+            echo '<script>console.log("MAUKA DEBUG: Order ' . esc_js($order_id) . ' not found");</script>';
             return;
         }
         
         // Only track purchases for valid order statuses
-        $valid_statuses = array('processing', 'completed', 'on-hold');
+        $valid_statuses = array('processing', 'completed', 'on-hold', 'pending');
         $order_status = $order->get_status();
         if (!in_array($order_status, $valid_statuses)) {
             Mauka_Meta_Pixel_Helpers::log("Order {$order_id} has status '{$order_status}', not tracking Purchase event", 'debug');
+            echo '<script>console.log("MAUKA DEBUG: Order ' . esc_js($order_id) . ' has status \'' . esc_js($order_status) . '\', not tracking Purchase event");</script>';
             return;
         }
         
         Mauka_Meta_Pixel_Helpers::log("Processing purchase for order #{$order_id} with total: {$order->get_total()} {$order->get_currency()}", 'debug');
+        echo '<script>console.log("MAUKA DEBUG: Processing purchase for order #' . esc_js($order_id) . ' with total: ' . esc_js($order->get_total()) . ' ' . esc_js($order->get_currency()) . '");</script>';
         
-        // Prevent duplicate tracking
-        if ($order->get_meta('_mauka_pixel_tracked', true)) {
+        // Prevent duplicate tracking - but allow forcing it for testing
+        if ($order->get_meta('_mauka_pixel_tracked', true) && !isset($_GET['force_pixel_tracking'])) {
             Mauka_Meta_Pixel_Helpers::log("Order {$order_id} already tracked, skipping", 'debug');
+            echo '<script>console.log("MAUKA DEBUG: Order ' . esc_js($order_id) . ' already tracked, skipping");</script>';
             return;
         }
         
