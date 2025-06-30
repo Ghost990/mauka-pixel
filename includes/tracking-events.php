@@ -16,6 +16,8 @@ class Mauka_Meta_Pixel_Tracking {
      * Constructor
      */
     public function __construct() {
+        // Test logging when class is constructed
+        Mauka_Meta_Pixel_Helpers::log('Mauka_Meta_Pixel_Tracking class constructed - logging test', 'info');
         $this->init_hooks();
     }
     
@@ -25,7 +27,6 @@ class Mauka_Meta_Pixel_Tracking {
     private function init_hooks() {
         // Standard tracking events
         add_action('wp_footer', array($this, 'track_page_view'));
-        add_action('wp_footer', array($this, 'check_initiate_checkout'), 20);
         add_action('wp_footer', array($this, 'output_stored_pixel_events'), 999);
         
         // WooCommerce hooks
@@ -42,18 +43,26 @@ class Mauka_Meta_Pixel_Tracking {
             // Add to cart
             add_action('woocommerce_add_to_cart', array($this, 'track_add_to_cart'), 10, 6);
             
-            // Keep the original hooks but make them call a different function
-            add_action('woocommerce_before_checkout_form', array($this, 'mark_checkout_started'), 10);
-            add_action('woocommerce_checkout_before_customer_details', array($this, 'mark_checkout_started'), 10);
-            add_action('woocommerce_checkout_order_review', array($this, 'mark_checkout_started'), 10);
+            // InitiateCheckout event - use same approach as AddPaymentInfo
+            add_action('woocommerce_review_order_before_payment', array($this, 'track_initiate_checkout'), 1); // Priority 1 to fire BEFORE AddPaymentInfo
+            
+            // Debug: Confirm hook registration
+            if (function_exists('wp_footer')) {
+                add_action('wp_footer', function() {
+                    if (function_exists('is_checkout') && is_checkout()) {
+                        echo '<script>console.log("MAUKA DEBUG: InitiateCheckout hook registered successfully");</script>';
+                    }
+                });
+            }
 
             // Add Payment Info
             add_action('woocommerce_review_order_before_payment', array($this, 'track_add_payment_info'));
             
             // Purchase completed - use multiple hooks to ensure it fires
-            add_action('woocommerce_thankyou', array($this, 'track_purchase'));
-            add_action('woocommerce_payment_complete', array($this, 'track_purchase'));
-            add_action('woocommerce_order_status_completed', array($this, 'track_purchase'));
+            add_action('woocommerce_thankyou', array($this, 'track_purchase'), 10);
+            add_action('woocommerce_payment_complete', array($this, 'track_purchase'), 10);
+            add_action('woocommerce_order_status_processing', array($this, 'track_purchase'), 10);
+            add_action('woocommerce_order_status_completed', array($this, 'track_purchase'), 10);
             
             // Registration completed
             add_action('woocommerce_created_customer', array($this, 'track_complete_registration'));
@@ -491,114 +500,69 @@ class Mauka_Meta_Pixel_Tracking {
     }
     
     /**
-     * Check and track InitiateCheckout event in wp_footer
+     * Fallback InitiateCheckout tracking for checkout pages
      */
-    public function check_initiate_checkout() {
-        // Add JavaScript console debugging
-        echo "<script>
-            console.log('Mauka Meta Pixel: check_initiate_checkout function called');
-        </script>";
-        
-        // Only proceed if we're on the checkout page
-        if (!function_exists('is_checkout') || !is_checkout()) {
-            echo "<script>console.log('Mauka Meta Pixel: Not on checkout page, skipping InitiateCheckout');</script>";
-            return;
+    public function track_initiate_checkout_fallback() {
+        // Only fire on checkout pages as a fallback if main hooks didn't work
+        if (function_exists('is_checkout') && is_checkout() && 
+            (!function_exists('is_order_received_page') || !is_order_received_page())) {
+            
+            // Add some debugging
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout fallback triggered from wp_head", 'debug');
+            
+            // Call the main tracking method (no parameters)
+            $this->track_initiate_checkout();
         }
-        
-        if (function_exists('is_order_received_page') && is_order_received_page()) {
-            echo "<script>console.log('Mauka Meta Pixel: On order received page, skipping InitiateCheckout');</script>";
-            return;
-        }
-        
-        echo "<script>console.log('Mauka Meta Pixel: Proceeding with InitiateCheckout tracking');</script>";
-        
-        // Add a direct pixel event for InitiateCheckout
-        echo "<script>
-            console.log('Mauka Meta Pixel: Firing InitiateCheckout event directly');
-            if (typeof fbq !== 'undefined') {
-                fbq('track', 'InitiateCheckout', {
-                    'event_id': 'direct_initiate_checkout_' + Date.now(),
-                    'content_type': 'product'
-                });
-                console.log('Mauka Meta Pixel: InitiateCheckout event fired directly');
-            } else {
-                console.log('Mauka Meta Pixel: fbq not defined, cannot fire InitiateCheckout');
-            }
-        </script>";
-        
-        // Now call the actual tracking function
-        $this->track_initiate_checkout();
     }
     
+
     /**
-     * Track InitiateCheckout event
+     * Track InitiateCheckout Event - using same approach as AddPaymentInfo
      */
     public function track_initiate_checkout() {
-        // Add detailed debugging
-        Mauka_Meta_Pixel_Helpers::log("Attempting to track InitiateCheckout event", 'debug');
+        // Add console debugging for deployment server testing
+        echo '<script>console.log("MAUKA DEBUG: track_initiate_checkout() called");</script>';
+        
+        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout: Starting event tracking", 'debug');
         
         if ( $this->should_skip_request() ) { 
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: should_skip_request() returned true", 'debug');
+            echo '<script>console.log("MAUKA DEBUG: InitiateCheckout skipped - should_skip_request");</script>';
             return; 
         }
         
-        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout')) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout event tracking is disabled in settings", 'debug');
+        $event_enabled = Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout');
+        $is_checkout = function_exists('is_checkout') && is_checkout();
+        $not_order_received = !function_exists('is_order_received_page') || !is_order_received_page();
+        
+        echo '<script>console.log("MAUKA DEBUG: InitiateCheckout validation - event_enabled: ' . ($event_enabled ? 'true' : 'false') . ', is_checkout: ' . ($is_checkout ? 'true' : 'false') . ', not_order_received: ' . ($not_order_received ? 'true' : 'false') . '");</script>';
+        
+        if (!$event_enabled || !$is_checkout || !$not_order_received) {
+            echo '<script>console.log("MAUKA DEBUG: InitiateCheckout skipped - validation failed");</script>';
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: validation failed", 'debug');
             return;
         }
-        
-        if (!function_exists('is_checkout')) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: is_checkout function does not exist", 'debug');
-            return;
-        }
-        
-        if (!is_checkout()) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: not on checkout page", 'debug');
-            return;
-        }
-        
-        if (function_exists('is_order_received_page') && is_order_received_page()) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: on order received page", 'debug');
-            return;
-        }
-        
-        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout validation passed, proceeding with event tracking", 'debug');
+
+        // Prevent multiple triggers
         static $triggered = false;
         if ($triggered) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout already triggered once, skipping", 'debug');
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: already triggered", 'debug');
             return;
         }
         $triggered = true;
-        
-        // Check WooCommerce cart
-        if (!function_exists('WC')) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: WC function does not exist", 'debug');
+
+        if (!function_exists('WC') || !WC()->cart || !method_exists(WC()->cart, 'is_empty') || WC()->cart->is_empty()) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: cart empty", 'debug');
             return;
         }
-        
-        if (!WC()->cart) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: WC()->cart is not available", 'debug');
-            return;
-        }
-        
-        if (!method_exists(WC()->cart, 'is_empty')) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: WC()->cart->is_empty method does not exist", 'debug');
-            return;
-        }
-        
-        if (WC()->cart->is_empty()) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: cart is empty", 'debug');
-            return;
-        }
-        
-        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout cart validation passed", 'debug');
+
         $cart = WC()->cart;
         $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('InitiateCheckout', $cart->get_cart_hash());
-        $event_time = time();
+        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout: Generated event ID: {$event_id}", 'debug');
+
         $content_ids = array();
         $contents = array();
         
-        // Use enhanced product data for better catalog matching
+        // Use enhanced product data for better catalog matching (same as AddPaymentInfo)
         foreach ($cart->get_cart() as $cart_item) {
             $product_id = $cart_item['variation_id'] ? $cart_item['variation_id'] : $cart_item['product_id'];
             $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($product_id);
@@ -610,65 +574,40 @@ class Mauka_Meta_Pixel_Tracking {
                 'item_price' => ( isset($cart_item['data']) && method_exists($cart_item['data'], 'get_price') ) ? (float) $cart_item['data']->get_price() : 0,
             );
         }
-        
-        // Enhanced data for better CAPI coverage and event matching
-        $payload = array(
+
+        $event_time = time();
+
+        // Add to page for pixel tracking
+        $this->add_pixel_event('InitiateCheckout', array(
+            'event_id' => $event_id,
             'content_ids' => $content_ids,
             'contents' => $contents,
             'content_type' => 'product',
-            'value' => (float) $cart->get_total('edit'),
+            'value' => $cart->get_total('edit'),
             'currency' => get_woocommerce_currency(),
             'num_items' => $cart->get_cart_contents_count(),
-        );
-        
-        // Add optional fields for better matching
-        $first_item = reset($cart->get_cart());
-        if ($first_item) {
-            $product_id = $first_item['variation_id'] ? $first_item['variation_id'] : $first_item['product_id'];
-            $product_data = Mauka_Meta_Pixel_Helpers::get_product_data($product_id);
-            
-            if (!empty($product_data['content_category'])) {
-                $payload['content_category'] = $product_data['content_category'];
-            }
-        }
-        
-        // Add to page for pixel tracking
-        $this->add_pixel_event('InitiateCheckout', array_merge(
-            array('event_id' => $event_id),
-            $payload
         ));
         
-        // Extract additional user data from checkout fields
-        $additional_user_data = array();
-        if (function_exists('WC') && WC()->checkout && method_exists(WC()->checkout, 'get_posted_data')) {
-            $posted_data = WC()->checkout->get_posted_data();
-            
-            // Add any custom checkout fields that might contain user data
-            foreach ($posted_data as $key => $value) {
-                if (strpos($key, 'billing_') === 0 && !in_array($key, array('billing_email', 'billing_phone', 'billing_first_name', 'billing_last_name', 'billing_city', 'billing_state', 'billing_postcode', 'billing_country'))) {
-                    $field_name = str_replace('billing_', '', $key);
-                    $additional_user_data[$field_name] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
-                }
-            }
-        }
+        echo '<script>console.log("MAUKA DEBUG: InitiateCheckout event added with ID: ' . $event_id . '");</script>';
         
-        // Send CAPI event with enhanced data for better matching
-        Mauka_Meta_Pixel_Helpers::log("Sending InitiateCheckout CAPI event with event_id: {$event_id}", 'debug');
-        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout payload: " . json_encode($payload), 'debug');
-        
-        $capi_result = Mauka_Meta_Pixel_Helpers::send_capi_event('InitiateCheckout', 
-            array('event_id' => $event_id), 
-            $payload, 
-            null, 
-            $event_time,
-            $additional_user_data
+        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout: Pixel event added", 'debug');
+
+        // Send CAPI event
+        Mauka_Meta_Pixel_Helpers::send_capi_event('InitiateCheckout',
+            array('event_id' => $event_id),
+            array(
+                'content_ids' => $content_ids,
+                'contents' => $contents,
+                'content_type' => 'product',
+                'value' => (float) $cart->get_total('edit'),
+                'currency' => get_woocommerce_currency(),
+                'num_items' => $cart->get_cart_contents_count(),
+            ),
+            null,
+            $event_time
         );
         
-        if ($capi_result) {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout CAPI event sent successfully", 'info');
-        } else {
-            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout CAPI event FAILED", 'error');
-        }
+        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout: CAPI event sent successfully", 'debug');
     }
 
     /**
@@ -691,6 +630,14 @@ class Mauka_Meta_Pixel_Tracking {
         $order = wc_get_order($order_id);
         if (!$order) {
             Mauka_Meta_Pixel_Helpers::log("Order {$order_id} not found", 'error');
+            return;
+        }
+        
+        // Only track purchases for valid order statuses
+        $valid_statuses = array('processing', 'completed', 'on-hold');
+        $order_status = $order->get_status();
+        if (!in_array($order_status, $valid_statuses)) {
+            Mauka_Meta_Pixel_Helpers::log("Order {$order_id} has status '{$order_status}', not tracking Purchase event", 'debug');
             return;
         }
         

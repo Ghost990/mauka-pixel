@@ -86,16 +86,69 @@ console.log('Mauka Meta Pixel: Test event code configured globally: <?php echo e
 fbq('track', 'PageView');
 <?php endif; ?>
 
-<?php if ($is_checkout && Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout')): 
+<?php 
+// Debug logging for InitiateCheckout detection
+Mauka_Meta_Pixel_Helpers::log("Server-side InitiateCheckout check - is_checkout: " . ($is_checkout ? 'true' : 'false') . ", event_enabled: " . (Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout') ? 'true' : 'false'), 'debug');
+
+// Add console logging for debugging
+?>
+console.log('Mauka Meta Pixel: Server-side InitiateCheckout check - is_checkout: <?php echo $is_checkout ? "true" : "false"; ?>, event_enabled: <?php echo Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout') ? "true" : "false"; ?>');
+<?php
+
+if ($is_checkout && Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout')): 
     $event_id = 'initiate_checkout_server_' . time();
     Mauka_Meta_Pixel_Helpers::log('InitiateCheckout event firing from server-side detection with event_id: ' . $event_id);
+    
+    // Get test event configuration
+    $test_mode = $plugin->get_option('test_mode');
+    $test_event_code = $plugin->get_option('test_event_code');
+    Mauka_Meta_Pixel_Helpers::log("Test mode: " . ($test_mode ? 'enabled' : 'disabled') . ", test event code: " . $test_event_code, 'debug');
+    
+    // Get cart data for InitiateCheckout event
+    $cart_data = array();
+    $cart_total = 0;
+    $cart_quantity = 0;
+    $currency = '';
+    
+    if (function_exists('WC') && WC()->cart && !WC()->cart->is_empty()) {
+        $currency = get_woocommerce_currency();
+        $cart_total = (float) WC()->cart->get_total('edit');
+        $cart_quantity = WC()->cart->get_cart_contents_count();
+        
+        $cart_items = array();
+        foreach (WC()->cart->get_cart() as $cart_item) {
+            $product = $cart_item['data'];
+            if ($product) {
+                $cart_items[] = array(
+                    'id' => $product->get_id(),
+                    'quantity' => $cart_item['quantity'],
+                    'item_price' => (float) $product->get_price()
+                );
+            }
+        }
+        
+        $cart_data = array(
+            'content_type' => 'product',
+            'currency' => $currency,
+            'value' => $cart_total,
+            'num_items' => $cart_quantity,
+            'contents' => $cart_items,
+            'event_id' => $event_id
+        );
+        
+        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout cart data: " . json_encode($cart_data), 'debug');
+    } else {
+        // Fallback with basic data
+        $cart_data = array(
+            'content_type' => 'product',
+            'event_id' => $event_id
+        );
+        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout using fallback data (empty cart)", 'debug');
+    }
 ?>
 // Fire InitiateCheckout event directly on checkout page
-fbq('track', 'InitiateCheckout', {
-    content_type: 'product',
-    event_id: '<?php echo esc_js($event_id); ?>'
-});
-console.log('Mauka Meta Pixel: InitiateCheckout event fired with ID: <?php echo esc_js($event_id); ?>');
+fbq('track', 'InitiateCheckout', <?php echo json_encode($cart_data); ?>);
+console.log('Mauka Meta Pixel: InitiateCheckout event fired with data:', <?php echo json_encode($cart_data); ?>);
 <?php endif; ?>
 
 console.log('Mauka Meta Pixel: Base pixel initialized with ID: <?php echo esc_js($pixel_id); ?>');
@@ -328,9 +381,18 @@ if ($is_thank_you_page && Mauka_Meta_Pixel_Helpers::is_event_enabled('Purchase')
     if ($order_id > 0) {
         $order = wc_get_order($order_id);
         
-        if ($order && !get_post_meta($order_id, '_mauka_meta_pixel_purchase_tracked', true)) {
-            // Mark as tracked
-            update_post_meta($order_id, '_mauka_meta_pixel_purchase_tracked', true);
+        if ($order && !$order->get_meta('_mauka_pixel_tracked', true)) {
+            // Only track purchases for valid order statuses
+            $valid_statuses = array('processing', 'completed', 'on-hold');
+            $order_status = $order->get_status();
+            if (!in_array($order_status, $valid_statuses)) {
+                Mauka_Meta_Pixel_Helpers::log("Order {$order_id} has status '{$order_status}', not tracking Purchase event from JS", 'debug');
+                return;
+            }
+            
+            // Mark as tracked (using same meta key as PHP tracking system)
+            $order->update_meta_data('_mauka_pixel_tracked', true);
+            $order->save();
             
             // Get order data
             $order_total = (float) $order->get_total();

@@ -365,6 +365,15 @@ class Mauka_Meta_Pixel_Helpers {
         // Force logging during debugging
         $debug_mode = true;
         
+        // Test logging functionality
+        $test_log_file = MAUKA_META_PIXEL_PLUGIN_DIR . 'log/test-log.txt';
+        @file_put_contents($test_log_file, "Log function called: {$message}\n", FILE_APPEND);
+        
+        // Also try to log to WordPress debug log
+        if (function_exists('error_log')) {
+            error_log("[Mauka Meta Pixel] {$message}");
+        }
+        
         try {
             $plugin = null;
             if (function_exists('mauka_meta_pixel')) {
