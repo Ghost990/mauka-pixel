@@ -369,8 +369,29 @@ class Mauka_Meta_Pixel {
      * Get plugin option
      */
     public function get_option($key, $default = null) {
+        // Debug option retrieval
+        if (class_exists('Mauka_Meta_Pixel_Helpers') && method_exists('Mauka_Meta_Pixel_Helpers', 'log')) {
+            Mauka_Meta_Pixel_Helpers::log("Getting option: {$key}", 'debug');
+        }
+        
         if (isset($this->options[$key])) {
-            return $this->options[$key];
+            $value = $this->options[$key];
+            
+            if (class_exists('Mauka_Meta_Pixel_Helpers') && method_exists('Mauka_Meta_Pixel_Helpers', 'log')) {
+                if (in_array($key, array('access_token', 'test_event_code'))) {
+                    // Mask sensitive values in logs
+                    $masked_value = !empty($value) ? substr($value, 0, 4) . '...' . substr($value, -4) : '(empty)';
+                    Mauka_Meta_Pixel_Helpers::log("Option {$key} = {$masked_value}", 'debug');
+                } else {
+                    Mauka_Meta_Pixel_Helpers::log("Option {$key} = " . (is_bool($value) ? ($value ? 'true' : 'false') : $value), 'debug');
+                }
+            }
+            
+            return $value;
+        }
+        
+        if (class_exists('Mauka_Meta_Pixel_Helpers') && method_exists('Mauka_Meta_Pixel_Helpers', 'log')) {
+            Mauka_Meta_Pixel_Helpers::log("Option {$key} not found, using default: " . ($default !== null ? $default : 'false'), 'debug');
         }
         
         return $default !== null ? $default : false;

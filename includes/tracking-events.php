@@ -25,6 +25,8 @@ class Mauka_Meta_Pixel_Tracking {
     private function init_hooks() {
         // Standard tracking events
         add_action('wp_footer', array($this, 'track_page_view'));
+        add_action('wp_footer', array($this, 'check_initiate_checkout'), 20);
+        add_action('wp_footer', array($this, 'output_stored_pixel_events'), 999);
         
         // WooCommerce hooks
         if (class_exists('WooCommerce')) {
@@ -40,14 +42,18 @@ class Mauka_Meta_Pixel_Tracking {
             // Add to cart
             add_action('woocommerce_add_to_cart', array($this, 'track_add_to_cart'), 10, 6);
             
-            // Checkout started
-            add_action('woocommerce_checkout_order_review', array($this, 'track_initiate_checkout'));
+            // Keep the original hooks but make them call a different function
+            add_action('woocommerce_before_checkout_form', array($this, 'mark_checkout_started'), 10);
+            add_action('woocommerce_checkout_before_customer_details', array($this, 'mark_checkout_started'), 10);
+            add_action('woocommerce_checkout_order_review', array($this, 'mark_checkout_started'), 10);
 
             // Add Payment Info
             add_action('woocommerce_review_order_before_payment', array($this, 'track_add_payment_info'));
             
-            // Purchase completed
+            // Purchase completed - use multiple hooks to ensure it fires
             add_action('woocommerce_thankyou', array($this, 'track_purchase'));
+            add_action('woocommerce_payment_complete', array($this, 'track_purchase'));
+            add_action('woocommerce_order_status_completed', array($this, 'track_purchase'));
             
             // Registration completed
             add_action('woocommerce_created_customer', array($this, 'track_complete_registration'));
@@ -69,37 +75,55 @@ class Mauka_Meta_Pixel_Tracking {
      * Track PageView event
      */
     public function track_page_view() {
-        if ( $this->should_skip_request() ) { return; }
+        // Debug log that we're attempting to track a page view
+        Mauka_Meta_Pixel_Helpers::log("Attempting to track PageView event", 'debug');
+        
+        if ( $this->should_skip_request() ) { 
+            Mauka_Meta_Pixel_Helpers::log("PageView skipped: should_skip_request returned true", 'debug');
+            return; 
+        }
+        
         if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('PageView')) {
+            Mauka_Meta_Pixel_Helpers::log("PageView skipped: event not enabled in settings", 'debug');
             return;
         }
         // Skip AJAX requests and repeated loads on checkout page to avoid duplicates
         if (defined('DOING_AJAX') && DOING_AJAX) {
+            Mauka_Meta_Pixel_Helpers::log("PageView skipped: DOING_AJAX is defined", 'debug');
             return;
         }
         if (defined('WC_DOING_AJAX') && WC_DOING_AJAX) {
+            Mauka_Meta_Pixel_Helpers::log("PageView skipped: WC_DOING_AJAX is defined", 'debug');
             return;
         }
         if (function_exists('is_checkout') && is_checkout() && ( !function_exists('is_order_received_page') || !is_order_received_page())) {
+            Mauka_Meta_Pixel_Helpers::log("PageView skipped: is on checkout page but not order received page", 'debug');
             return;
         }
         
         // Prevent multiple PageView events on same page load
         static $pageview_sent = false;
         if ($pageview_sent) {
+            Mauka_Meta_Pixel_Helpers::log("PageView skipped: already sent on this page load", 'debug');
             return;
         }
         $pageview_sent = true;
+        
+        Mauka_Meta_Pixel_Helpers::log("PageView event proceeding - all checks passed", 'debug');
         
         // Generate event ID for deduplication
         $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('PageView', get_the_ID());
         $event_time = time();
         
+        Mauka_Meta_Pixel_Helpers::log("PageView event ID: {$event_id}", 'debug');
+        
         // Add to page for pixel tracking
         $this->add_pixel_event('PageView', array('event_id' => $event_id));
+        Mauka_Meta_Pixel_Helpers::log("PageView added to pixel events queue", 'debug');
         
         // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('PageView', array('event_id' => $event_id), array(), null, $event_time);
+        $result = Mauka_Meta_Pixel_Helpers::send_capi_event('PageView', array('event_id' => $event_id), array(), null, $event_time);
+        Mauka_Meta_Pixel_Helpers::log("PageView CAPI event sent, result: " . ($result ? 'success' : 'failed'), 'debug');
     }
     
     /**
@@ -395,31 +419,179 @@ class Mauka_Meta_Pixel_Tracking {
      * Helper to buffer pixel events for rendering in footer
      */
     private function add_pixel_event($event_name, $event_data = array()) {
+        Mauka_Meta_Pixel_Helpers::log("Adding pixel event: {$event_name} with data: " . json_encode($event_data), 'debug');
+        
         add_filter('mauka_meta_pixel_events', function($events) use ($event_name, $event_data) {
             $events[] = array(
                 'event_name' => $event_name,
                 'event_data' => $event_data,
             );
+            
+            Mauka_Meta_Pixel_Helpers::log("Total pixel events in queue: " . count($events), 'debug');
             return $events;
         });
     }
+    
+    /**
+     * Output stored pixel events in the footer
+     */
+    public function output_stored_pixel_events() {
+        $plugin = mauka_meta_pixel();
+        if (!$plugin || !$plugin->get_option('pixel_enabled')) {
+            return;
+        }
+        
+        $pixel_id = $plugin->get_option('pixel_id');
+        if (empty($pixel_id)) {
+            return;
+        }
+        
+        // Get all events added via add_pixel_event
+        $events = apply_filters('mauka_meta_pixel_events', array());
+        
+        if (empty($events)) {
+            Mauka_Meta_Pixel_Helpers::log("No pixel events to output", 'debug');
+            return;
+        }
+        
+        Mauka_Meta_Pixel_Helpers::log("Outputting " . count($events) . " pixel events", 'debug');
+        
+        echo "<!-- Mauka Meta Pixel Events -->\n";
+        echo "<script>\n";
+        
+        foreach ($events as $event) {
+            $event_name = $event['event_name'];
+            $event_data = isset($event['event_data']) ? $event['event_data'] : array();
+            
+            echo "fbq('track', '" . esc_js($event_name) . "'";
+            
+            if (!empty($event_data)) {
+                echo ", " . wp_json_encode($event_data);
+            }
+            
+            echo ");\n";
+            
+            Mauka_Meta_Pixel_Helpers::log("Rendered pixel event: {$event_name}", 'debug');
+        }
+        
+        echo "</script>\n";
+        echo "<!-- End Mauka Meta Pixel Events -->\n";
+    }
 
+    /**
+     * Flag to track if checkout has been started
+     */
+    private $checkout_started = false;
+    
+    /**
+     * Mark that checkout has started
+     */
+    public function mark_checkout_started() {
+        $this->checkout_started = true;
+    }
+    
+    /**
+     * Check and track InitiateCheckout event in wp_footer
+     */
+    public function check_initiate_checkout() {
+        // Add JavaScript console debugging
+        echo "<script>
+            console.log('Mauka Meta Pixel: check_initiate_checkout function called');
+        </script>";
+        
+        // Only proceed if we're on the checkout page
+        if (!function_exists('is_checkout') || !is_checkout()) {
+            echo "<script>console.log('Mauka Meta Pixel: Not on checkout page, skipping InitiateCheckout');</script>";
+            return;
+        }
+        
+        if (function_exists('is_order_received_page') && is_order_received_page()) {
+            echo "<script>console.log('Mauka Meta Pixel: On order received page, skipping InitiateCheckout');</script>";
+            return;
+        }
+        
+        echo "<script>console.log('Mauka Meta Pixel: Proceeding with InitiateCheckout tracking');</script>";
+        
+        // Add a direct pixel event for InitiateCheckout
+        echo "<script>
+            console.log('Mauka Meta Pixel: Firing InitiateCheckout event directly');
+            if (typeof fbq !== 'undefined') {
+                fbq('track', 'InitiateCheckout', {
+                    'event_id': 'direct_initiate_checkout_' + Date.now(),
+                    'content_type': 'product'
+                });
+                console.log('Mauka Meta Pixel: InitiateCheckout event fired directly');
+            } else {
+                console.log('Mauka Meta Pixel: fbq not defined, cannot fire InitiateCheckout');
+            }
+        </script>";
+        
+        // Now call the actual tracking function
+        $this->track_initiate_checkout();
+    }
+    
     /**
      * Track InitiateCheckout event
      */
     public function track_initiate_checkout() {
-        if ( $this->should_skip_request() ) { return; }
-        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout') || !function_exists('is_checkout') || !is_checkout() || (function_exists('is_order_received_page') && is_order_received_page())) {
+        // Add detailed debugging
+        Mauka_Meta_Pixel_Helpers::log("Attempting to track InitiateCheckout event", 'debug');
+        
+        if ( $this->should_skip_request() ) { 
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: should_skip_request() returned true", 'debug');
+            return; 
+        }
+        
+        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('InitiateCheckout')) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout event tracking is disabled in settings", 'debug');
             return;
         }
+        
+        if (!function_exists('is_checkout')) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: is_checkout function does not exist", 'debug');
+            return;
+        }
+        
+        if (!is_checkout()) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: not on checkout page", 'debug');
+            return;
+        }
+        
+        if (function_exists('is_order_received_page') && is_order_received_page()) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: on order received page", 'debug');
+            return;
+        }
+        
+        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout validation passed, proceeding with event tracking", 'debug');
         static $triggered = false;
         if ($triggered) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout already triggered once, skipping", 'debug');
             return;
         }
         $triggered = true;
-        if (!function_exists('WC') || !WC()->cart || !method_exists(WC()->cart, 'is_empty') || WC()->cart->is_empty()) {
+        
+        // Check WooCommerce cart
+        if (!function_exists('WC')) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: WC function does not exist", 'debug');
             return;
         }
+        
+        if (!WC()->cart) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: WC()->cart is not available", 'debug');
+            return;
+        }
+        
+        if (!method_exists(WC()->cart, 'is_empty')) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: WC()->cart->is_empty method does not exist", 'debug');
+            return;
+        }
+        
+        if (WC()->cart->is_empty()) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout skipped: cart is empty", 'debug');
+            return;
+        }
+        
+        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout cart validation passed", 'debug');
         $cart = WC()->cart;
         $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('InitiateCheckout', $cart->get_cart_hash());
         $event_time = time();
@@ -466,30 +638,67 @@ class Mauka_Meta_Pixel_Tracking {
             $payload
         ));
         
+        // Extract additional user data from checkout fields
+        $additional_user_data = array();
+        if (function_exists('WC') && WC()->checkout && method_exists(WC()->checkout, 'get_posted_data')) {
+            $posted_data = WC()->checkout->get_posted_data();
+            
+            // Add any custom checkout fields that might contain user data
+            foreach ($posted_data as $key => $value) {
+                if (strpos($key, 'billing_') === 0 && !in_array($key, array('billing_email', 'billing_phone', 'billing_first_name', 'billing_last_name', 'billing_city', 'billing_state', 'billing_postcode', 'billing_country'))) {
+                    $field_name = str_replace('billing_', '', $key);
+                    $additional_user_data[$field_name] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
+                }
+            }
+        }
+        
         // Send CAPI event with enhanced data for better matching
-        Mauka_Meta_Pixel_Helpers::send_capi_event('InitiateCheckout', 
+        Mauka_Meta_Pixel_Helpers::log("Sending InitiateCheckout CAPI event with event_id: {$event_id}", 'debug');
+        Mauka_Meta_Pixel_Helpers::log("InitiateCheckout payload: " . json_encode($payload), 'debug');
+        
+        $capi_result = Mauka_Meta_Pixel_Helpers::send_capi_event('InitiateCheckout', 
             array('event_id' => $event_id), 
             $payload, 
             null, 
-            $event_time
+            $event_time,
+            $additional_user_data
         );
+        
+        if ($capi_result) {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout CAPI event sent successfully", 'info');
+        } else {
+            Mauka_Meta_Pixel_Helpers::log("InitiateCheckout CAPI event FAILED", 'error');
+        }
     }
 
     /**
      * Track Purchase event
      */
     public function track_purchase($order_id) {
-        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('Purchase') || !$order_id) {
+        // Add detailed debugging
+        Mauka_Meta_Pixel_Helpers::log("Attempting to track purchase for order ID: {$order_id}", 'debug');
+        
+        if (!Mauka_Meta_Pixel_Helpers::is_event_enabled('Purchase')) {
+            Mauka_Meta_Pixel_Helpers::log("Purchase event tracking is disabled in settings", 'debug');
+            return;
+        }
+        
+        if (!$order_id) {
+            Mauka_Meta_Pixel_Helpers::log("No order ID provided for purchase tracking", 'debug');
             return;
         }
         
         $order = wc_get_order($order_id);
         if (!$order) {
+            Mauka_Meta_Pixel_Helpers::log("Order {$order_id} not found", 'error');
             return;
         }
         
+        Mauka_Meta_Pixel_Helpers::log("Processing purchase for order #{$order_id} with total: {$order->get_total()} {$order->get_currency()}", 'debug');
+        
         // Prevent duplicate tracking
         if ($order->get_meta('_mauka_pixel_tracked', true)) {
+            Mauka_Meta_Pixel_Helpers::log("Order {$order_id} already tracked, skipping", 'debug');
             return;
         }
         
@@ -525,12 +734,52 @@ class Mauka_Meta_Pixel_Tracking {
         // Add to page for pixel tracking
         $this->add_pixel_event('Purchase', array_merge(array('event_id' => $event_id), $payload));
         
-        // Send CAPI event
-        Mauka_Meta_Pixel_Helpers::send_capi_event('Purchase', array('event_id' => $event_id), $payload, $order_id, $event_time);
+        // Extract additional user data from order meta
+        $additional_user_data = array();
         
-        // Mark as tracked to prevent duplicates
-        $order->update_meta_data('_mauka_pixel_tracked', true);
-        $order->save();
+        // Check for subscription data if WooCommerce Subscriptions is active
+        if (function_exists('wcs_get_subscriptions_for_order')) {
+            $subscriptions = wcs_get_subscriptions_for_order($order_id);
+            if (!empty($subscriptions)) {
+                $subscription = reset($subscriptions);
+                $additional_user_data['subscription_id'] = Mauka_Meta_Pixel_Helpers::hash_user_data($subscription->get_id());
+                $additional_user_data['subscription_status'] = Mauka_Meta_Pixel_Helpers::hash_user_data($subscription->get_status());
+            }
+        }
+        
+        // Add any custom order meta that might contain user data
+        $order_meta = $order->get_meta_data();
+        foreach ($order_meta as $meta) {
+            $key = $meta->key;
+            $value = $meta->value;
+            if (strpos($key, '_billing_') === 0 && !in_array($key, array('_billing_email', '_billing_phone', '_billing_first_name', '_billing_last_name', '_billing_city', '_billing_state', '_billing_postcode', '_billing_country'))) {
+                $field_name = str_replace('_billing_', '', $key);
+                $additional_user_data[$field_name] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
+            }
+        }
+        
+        // Send CAPI event with enhanced user data
+        Mauka_Meta_Pixel_Helpers::log("Sending Purchase CAPI event for order #{$order_id} with event_id: {$event_id}", 'debug');
+        Mauka_Meta_Pixel_Helpers::log("Purchase payload: " . json_encode($payload), 'debug');
+        
+        $capi_result = Mauka_Meta_Pixel_Helpers::send_capi_event('Purchase', 
+            array('event_id' => $event_id), 
+            $payload, 
+            $order_id, 
+            $event_time, 
+            $additional_user_data
+        );
+        
+        if ($capi_result) {
+            Mauka_Meta_Pixel_Helpers::log("Purchase CAPI event sent successfully for order #{$order_id}", 'info');
+            
+            // Mark as tracked to prevent duplicates
+            $order->update_meta_data('_mauka_pixel_tracked', true);
+            $order->save();
+            Mauka_Meta_Pixel_Helpers::log("Order #{$order_id} marked as tracked", 'debug');
+        } else {
+            Mauka_Meta_Pixel_Helpers::log("Purchase CAPI event FAILED for order #{$order_id}", 'error');
+        }
     }
 
     /**
@@ -553,8 +802,30 @@ class Mauka_Meta_Pixel_Tracking {
         }
         $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('CompleteRegistration', $customer_id);
         $event_time = time();
+        
+        // Get additional user data from user meta
+        $additional_user_data = array();
+        $user = get_user_by('id', $customer_id);
+        
+        if ($user) {
+            // Get all user meta
+            $user_meta = get_user_meta($customer_id);
+            
+            // Extract relevant user meta fields
+            foreach ($user_meta as $key => $values) {
+                $value = reset($values); // Get first value (user meta returns arrays)
+                
+                // Look for additional fields that might contain user data
+                if (!in_array($key, array('billing_email', 'billing_phone', 'billing_first_name', 'billing_last_name', 'billing_city', 'billing_state', 'billing_postcode', 'billing_country')) && 
+                    (strpos($key, 'billing_') === 0 || strpos($key, 'shipping_') === 0)) {
+                    $field_name = str_replace(array('billing_', 'shipping_'), '', $key);
+                    $additional_user_data[$field_name] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
+                }
+            }
+        }
+        
         $this->add_pixel_event('CompleteRegistration', array('event_id' => $event_id, 'status' => 'registered'));
-        Mauka_Meta_Pixel_Helpers::send_capi_event('CompleteRegistration', array('event_id' => $event_id), array('status' => 'registered'), null, $event_time);
+        Mauka_Meta_Pixel_Helpers::send_capi_event('CompleteRegistration', array('event_id' => $event_id), array('status' => 'registered'), null, $event_time, $additional_user_data);
     }
 
     /**
@@ -575,8 +846,29 @@ class Mauka_Meta_Pixel_Tracking {
         }
         $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Search', md5($term));
         $event_time = time();
+        
+        // Get additional search context data
+        $additional_user_data = array();
+        
+        // Add search refinements if available (like category, tag filters)
+        if (isset($_GET['product_cat']) && !empty($_GET['product_cat'])) {
+            $additional_user_data['product_category'] = Mauka_Meta_Pixel_Helpers::hash_user_data($_GET['product_cat']);
+        }
+        
+        if (isset($_GET['product_tag']) && !empty($_GET['product_tag'])) {
+            $additional_user_data['product_tag'] = Mauka_Meta_Pixel_Helpers::hash_user_data($_GET['product_tag']);
+        }
+        
+        // Add any other search parameters
+        foreach ($_GET as $key => $value) {
+            if (strpos($key, 'filter_') === 0 && !empty($value)) {
+                $filter_name = str_replace('filter_', '', $key);
+                $additional_user_data[$filter_name] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
+            }
+        }
+        
         $this->add_pixel_event('Search', array('event_id' => $event_id, 'search_string' => $term));
-        Mauka_Meta_Pixel_Helpers::send_capi_event('Search', array('event_id' => $event_id), array('search_string' => $term), null, $event_time);
+        Mauka_Meta_Pixel_Helpers::send_capi_event('Search', array('event_id' => $event_id), array('search_string' => $term), null, $event_time, $additional_user_data);
     }
 
     /**
@@ -589,8 +881,73 @@ class Mauka_Meta_Pixel_Tracking {
         $form_id = $contact_form->id();
         $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Lead', 'cf7_' . $form_id);
         $event_time = time();
+        
+        // Extract user data from form submission
+        $additional_user_data = array();
+        
+        // Check if Contact Form 7 is active and the class exists
+        if (class_exists('WPCF7_Submission')) {
+            $submission = WPCF7_Submission::get_instance();
+            
+            if ($submission) {
+            $posted_data = $submission->get_posted_data();
+            
+            // Map common field names to Meta parameters
+            $field_mapping = array(
+                'email' => 'em',
+                'your-email' => 'em',
+                'email-address' => 'em',
+                'phone' => 'ph',
+                'your-phone' => 'ph',
+                'tel' => 'ph',
+                'telephone' => 'ph',
+                'first-name' => 'fn',
+                'your-first-name' => 'fn',
+                'fname' => 'fn',
+                'last-name' => 'ln',
+                'your-last-name' => 'ln',
+                'lname' => 'ln',
+                'city' => 'ct',
+                'your-city' => 'ct',
+                'state' => 'st',
+                'your-state' => 'st',
+                'zip' => 'zp',
+                'zipcode' => 'zp',
+                'postal-code' => 'zp',
+                'your-zip' => 'zp',
+                'country' => 'country',
+                'your-country' => 'country'
+            );
+            
+            // Process form fields
+            foreach ($posted_data as $field_name => $value) {
+                if (isset($field_mapping[$field_name])) {
+                    // This is a known field, map it to the correct Meta parameter
+                    $meta_param = $field_mapping[$field_name];
+                    
+                    // Special handling for phone numbers
+                    if ($meta_param === 'ph') {
+                        $additional_user_data[$meta_param] = Mauka_Meta_Pixel_Helpers::hash_phone($value);
+                    } 
+                    // Special handling for zip codes
+                    else if ($meta_param === 'zp') {
+                        $additional_user_data[$meta_param] = hash('sha256', $value);
+                    }
+                    // Standard hashing for other fields
+                    else {
+                        $additional_user_data[$meta_param] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
+                    }
+                } 
+                // Process any other fields that might contain user data
+                else if (!empty($value) && is_string($value)) {
+                    $additional_user_data[$field_name] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
+                }
+            }
+        }
+        }
+        
         $this->add_pixel_event('Lead', array('event_id' => $event_id, 'content_name' => 'Contact Form: ' . $form_id));
-        Mauka_Meta_Pixel_Helpers::send_capi_event('Lead', array('event_id' => $event_id), array('content_name' => 'Contact Form: ' . $form_id), null, $event_time);
+        Mauka_Meta_Pixel_Helpers::send_capi_event('Lead', array('event_id' => $event_id), array('content_name' => 'Contact Form: ' . $form_id), null, $event_time, $additional_user_data);
     }
 
     /**
@@ -603,7 +960,88 @@ class Mauka_Meta_Pixel_Tracking {
         $form_id = $form['id'];
         $event_id = Mauka_Meta_Pixel_Helpers::generate_event_id('Lead', 'gf_' . $form_id . '_' . $entry['id']);
         $event_time = time();
+        
+        // Extract user data from form submission
+        $additional_user_data = array();
+        
+        // Process form fields based on their type
+        if (!empty($form['fields']) && is_array($form['fields'])) {
+            foreach ($form['fields'] as $field) {
+                $field_id = $field->id;
+                $field_type = $field->type;
+                
+                // Safely get the value using rgar if available, otherwise use array access
+                if (function_exists('rgar')) {
+                    $value = rgar($entry, $field_id);
+                } else {
+                    $value = isset($entry[$field_id]) ? $entry[$field_id] : '';
+                }
+                
+                if (empty($value)) {
+                    continue;
+                }
+                
+                // Process based on field type
+                switch ($field_type) {
+                    case 'email':
+                        $additional_user_data['em'] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
+                        break;
+                        
+                    case 'phone':
+                        $additional_user_data['ph'] = Mauka_Meta_Pixel_Helpers::hash_phone($value);
+                        break;
+                        
+                    case 'name':
+                        // Handle name fields which might have prefix, first, middle, last, suffix
+                        if (is_array($value)) {
+                            if (!empty($value[3])) { // First name
+                                $additional_user_data['fn'] = Mauka_Meta_Pixel_Helpers::hash_user_data($value[3]);
+                            }
+                            if (!empty($value[6])) { // Last name
+                                $additional_user_data['ln'] = Mauka_Meta_Pixel_Helpers::hash_user_data($value[6]);
+                            }
+                        } else {
+                            // Simple name field
+                            $name_parts = explode(' ', $value, 2);
+                            if (!empty($name_parts[0])) {
+                                $additional_user_data['fn'] = Mauka_Meta_Pixel_Helpers::hash_user_data($name_parts[0]);
+                            }
+                            if (!empty($name_parts[1])) {
+                                $additional_user_data['ln'] = Mauka_Meta_Pixel_Helpers::hash_user_data($name_parts[1]);
+                            }
+                        }
+                        break;
+                        
+                    case 'address':
+                        // Handle address fields
+                        if (is_array($value)) {
+                            if (!empty($value['city'])) {
+                                $additional_user_data['ct'] = Mauka_Meta_Pixel_Helpers::hash_user_data($value['city']);
+                            }
+                            if (!empty($value['state'])) {
+                                $additional_user_data['st'] = Mauka_Meta_Pixel_Helpers::hash_user_data($value['state']);
+                            }
+                            if (!empty($value['zip'])) {
+                                $additional_user_data['zp'] = hash('sha256', $value['zip']);
+                            }
+                            if (!empty($value['country'])) {
+                                $additional_user_data['country'] = Mauka_Meta_Pixel_Helpers::hash_user_data($value['country']);
+                            }
+                        }
+                        break;
+                        
+                    default:
+                        // For other field types, use the field label as the key
+                        if (is_string($value) && !empty($field->label)) {
+                            $field_key = sanitize_title($field->label);
+                            $additional_user_data[$field_key] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
+                        }
+                        break;
+                }
+            }
+        }
+        
         $this->add_pixel_event('Lead', array('event_id' => $event_id, 'content_name' => 'Gravity Form: ' . $form['title']));
-        Mauka_Meta_Pixel_Helpers::send_capi_event('Lead', array('event_id' => $event_id), array('content_name' => 'Gravity Form: ' . $form['title']), null, $event_time);
+        Mauka_Meta_Pixel_Helpers::send_capi_event('Lead', array('event_id' => $event_id), array('content_name' => 'Gravity Form: ' . $form['title']), null, $event_time, $additional_user_data);
     }
 }

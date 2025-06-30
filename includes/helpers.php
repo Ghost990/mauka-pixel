@@ -117,6 +117,9 @@ class Mauka_Meta_Pixel_Helpers {
     public static function get_user_data($order_id = null) {
         $user_data = array();
         $user = null;
+        $dob = '';
+        $gender = '';
+        $external_id = '';
 
         if ($order_id) {
             $order = wc_get_order($order_id);
@@ -124,6 +127,10 @@ class Mauka_Meta_Pixel_Helpers {
                 $user_id = $order->get_user_id();
                 if ($user_id) {
                     $user = get_user_by('id', $user_id);
+                    // Get date of birth and gender if available from user meta
+                    $dob = get_user_meta($user_id, 'billing_birth_date', true) ?: get_user_meta($user_id, 'birth_date', true);
+                    $gender = get_user_meta($user_id, 'billing_gender', true) ?: get_user_meta($user_id, 'gender', true);
+                    $external_id = (string) $user_id;
                 } else {
                     // Guest user from a completed order
                     $user_data = array(
@@ -135,18 +142,29 @@ class Mauka_Meta_Pixel_Helpers {
                         'st'      => self::hash_user_data($order->get_billing_state()),
                         'zp'      => hash('sha256', $order->get_billing_postcode()),
                         'country' => self::hash_user_data($order->get_billing_country()),
-                        'gender'  => self::hash_user_data(get_post_meta($order_id, '_billing_gender', true)),
-                        'db'      => self::hash_user_data(get_post_meta($order_id, '_billing_birth_date', true)),
                     );
+                    
+                    // Try to get additional data from order meta
+                    $dob = $order->get_meta('billing_birth_date', true) ?: get_post_meta($order_id, '_billing_birth_date', true);
+                    $gender = $order->get_meta('billing_gender', true) ?: get_post_meta($order_id, '_billing_gender', true);
+                    
+                    // Try to get external_id from order meta or generate one from order
+                    $external_id = $order->get_meta('_customer_user', true);
+                    if (empty($external_id)) {
+                        $external_id = 'guest_' . $order->get_id();
+                    }
                 }
             }
         } else {
             $user = wp_get_current_user();
         }
-
+        
         if ($user && $user->ID) { // It's a logged-in user
             $billing_first_name = get_user_meta($user->ID, 'billing_first_name', true);
             $billing_last_name  = get_user_meta($user->ID, 'billing_last_name', true);
+            $dob = get_user_meta($user->ID, 'billing_birth_date', true) ?: get_user_meta($user->ID, 'birth_date', true);
+            $gender = get_user_meta($user->ID, 'billing_gender', true) ?: get_user_meta($user->ID, 'gender', true);
+            $external_id = (string) $user->ID;
 
             $user_data = array(
                 'em'          => self::hash_user_data($user->user_email),
@@ -157,21 +175,14 @@ class Mauka_Meta_Pixel_Helpers {
                 'st'          => self::hash_user_data(get_user_meta($user->ID, 'billing_state', true)),
                 'zp'          => hash('sha256', get_user_meta($user->ID, 'billing_postcode', true)),
                 'country'     => self::hash_user_data(get_user_meta($user->ID, 'billing_country', true)),
-                'external_id' => (string) $user->ID,
-                'gender'      => self::hash_user_data(get_user_meta($user->ID, 'billing_gender', true)),
-                'db'          => self::hash_user_data(get_user_meta($user->ID, 'billing_birth_date', true)),
             );
         } elseif (function_exists('WC') && 
                  WC() && 
-                 property_exists(WC(), 'checkout') && 
                  WC()->checkout && 
-                 function_exists('is_checkout') && 
-                 is_checkout() && 
-                 function_exists('is_order_received_page') && 
-                 !is_order_received_page() && 
                  method_exists(WC()->checkout, 'get_posted_data') && 
-                 !empty(WC()->checkout->get_posted_data())) {
-            // Guest user on checkout page with filled-in data
+                 function_exists('is_checkout') && 
+                 is_checkout()) {
+            // Guest user on checkout page
             $posted_data = WC()->checkout->get_posted_data();
             $user_data = array(
                 'em'      => isset($posted_data['billing_email']) ? self::hash_user_data($posted_data['billing_email']) : null,
@@ -182,25 +193,120 @@ class Mauka_Meta_Pixel_Helpers {
                 'st'      => isset($posted_data['billing_state']) ? self::hash_user_data($posted_data['billing_state']) : null,
                 'zp'      => isset($posted_data['billing_postcode']) ? hash('sha256', $posted_data['billing_postcode']) : null,
                 'country' => isset($posted_data['billing_country']) ? self::hash_user_data($posted_data['billing_country']) : null,
-                'gender'  => isset($posted_data['billing_gender']) ? self::hash_user_data($posted_data['billing_gender']) : null,
-                'db'      => isset($posted_data['billing_birth_date']) ? self::hash_user_data($posted_data['billing_birth_date']) : null,
             );
+            
+            // Check for additional fields in posted data
+            if (isset($posted_data['billing_birth_date'])) {
+                $dob = $posted_data['billing_birth_date'];
+            }
+            if (isset($posted_data['billing_gender'])) {
+                $gender = $posted_data['billing_gender'];
+            }
+            
+            // Generate temporary external_id for checkout
+            $session_id = self::get_session_id();
+            $external_id = 'checkout_' . $session_id;
+        } elseif (function_exists('WC') && WC() && WC()->session) {
+            // Try to get data from WooCommerce session for non-checkout pages
+            $session_customer = WC()->session->get('customer');
+            if (!empty($session_customer)) {
+                if (!empty($session_customer['email'])) {
+                    $user_data['em'] = self::hash_user_data($session_customer['email']);
+                }
+                if (!empty($session_customer['phone'])) {
+                    $user_data['ph'] = self::hash_phone($session_customer['phone']);
+                }
+                if (!empty($session_customer['first_name'])) {
+                    $user_data['fn'] = self::hash_user_data($session_customer['first_name']);
+                }
+                if (!empty($session_customer['last_name'])) {
+                    $user_data['ln'] = self::hash_user_data($session_customer['last_name']);
+                }
+                if (!empty($session_customer['postcode'])) {
+                    $user_data['zp'] = hash('sha256', $session_customer['postcode']);
+                }
+                if (!empty($session_customer['city'])) {
+                    $user_data['ct'] = self::hash_user_data($session_customer['city']);
+                }
+                if (!empty($session_customer['state'])) {
+                    $user_data['st'] = self::hash_user_data($session_customer['state']);
+                }
+                if (!empty($session_customer['country'])) {
+                    $user_data['country'] = self::hash_user_data($session_customer['country']);
+                }
+                
+                // Generate session-based external_id
+                $session_id = self::get_session_id();
+                $external_id = 'session_' . $session_id;
+            }
         }
 
+        // Add date of birth if available
+        if (!empty($dob)) {
+            // Format date to YYYYMMDD
+            $formatted_dob = preg_replace('/[^0-9]/', '', $dob);
+            if (strlen($formatted_dob) == 8) {
+                $user_data['db'] = self::hash_user_data($formatted_dob);
+            } elseif (strtotime($dob)) {
+                $user_data['db'] = self::hash_user_data(date('Ymd', strtotime($dob)));
+            }
+        }
+        
+        // Add gender if available
+        if (!empty($gender)) {
+            $gender = strtolower(substr($gender, 0, 1));
+            if ($gender == 'm' || $gender == 'f') {
+                $user_data['ge'] = self::hash_user_data($gender);
+            }
+        }
+        
+        // Add external_id if available
+        if (!empty($external_id)) {
+            // Make sure external_id is properly hashed for better security
+            $user_data['external_id'] = self::hash_user_data($external_id);
+        } else {
+            // If we still don't have an external_id, generate one from session
+            $session_id = self::get_session_id();
+            $user_data['external_id'] = self::hash_user_data('visitor_' . $session_id);
+        }
+        
+        // Add default location data for Budapest, Hungary if not already set
+        if (empty($user_data['ct'])) {
+            $user_data['ct'] = self::hash_user_data('Budapest');
+        }
+        if (empty($user_data['country'])) {
+            $user_data['country'] = self::hash_user_data('HU');
+        }
+        if (empty($user_data['st'])) {
+            $user_data['st'] = self::hash_user_data('Budapest');
+        }
+        if (empty($user_data['zp'])) {
+            // Default postal code for central Budapest
+            $user_data['zp'] = hash('sha256', '1051');
+        }
+        
         // Add client IP and User Agent if available
-        if (!empty($_SERVER['REMOTE_ADDR'])) {
+        if (self::get_client_ip()) {
             $user_data['client_ip_address'] = self::get_client_ip();
         }
-        if (!empty($_SERVER['HTTP_USER_AGENT'])) {
+        if (self::get_user_agent()) {
             $user_data['client_user_agent'] = self::get_user_agent();
         }
-
+        
         // Get Facebook Click ID and Browser ID from cookies
         if (isset($_COOKIE['_fbp'])) {
             $user_data['fbp'] = $_COOKIE['_fbp'];
+        } else {
+            $user_data['fbp'] = self::get_fbp();
         }
+        
         if (isset($_COOKIE['_fbc'])) {
             $user_data['fbc'] = $_COOKIE['_fbc'];
+        } else {
+            $fbc = self::get_fbc();
+            if ($fbc) {
+                $user_data['fbc'] = $fbc;
+            }
         }
         
         // Get Facebook Login ID if available
@@ -256,47 +362,102 @@ class Mauka_Meta_Pixel_Helpers {
      * Log messages to file
      */
     public static function log($message, $level = 'info') {
-        $plugin = mauka_meta_pixel();
+        // Force logging during debugging
+        $debug_mode = true;
         
-        if (!$plugin || !$plugin->get_option('enable_logging')) {
-            return;
-        }
-        
-        $log_file = MAUKA_META_PIXEL_PLUGIN_DIR . 'log/mauka-capi.log';
-        
-        // Create log directory if not exists
-        $log_dir = dirname($log_file);
-        if (!is_dir($log_dir)) {
-            wp_mkdir_p($log_dir);
-        }
-        
-        $timestamp = current_time('Y-m-d H:i:s');
-        $log_entry = "[{$timestamp}] [{$level}] {$message}" . PHP_EOL;
-        
-        error_log($log_entry, 3, $log_file);
-        
-        // Limit log file size (max 10MB)
-        if (file_exists($log_file) && filesize($log_file) > 10 * 1024 * 1024) {
-            $lines = file($log_file);
-            if ($lines && is_array($lines)) {
-                $keep_lines = array_slice($lines, -1000); // Keep last 1000 lines
-                file_put_contents($log_file, implode('', $keep_lines));
+        try {
+            $plugin = null;
+            if (function_exists('mauka_meta_pixel')) {
+                $plugin = mauka_meta_pixel();
             }
+            
+            if ((!$plugin || !$plugin->get_option('enable_logging')) && !$debug_mode) {
+                return;
+            }
+            
+            $log_file = MAUKA_META_PIXEL_PLUGIN_DIR . 'log/mauka-capi.log';
+            
+            // Create log directory if not exists
+            $log_dir = dirname($log_file);
+            if (!is_dir($log_dir)) {
+                if (function_exists('wp_mkdir_p')) {
+                    wp_mkdir_p($log_dir);
+                } else {
+                    mkdir($log_dir, 0755, true);
+                }
+            }
+            
+            // Check if directory exists and is writable
+            if (!is_dir($log_dir) || !is_writable($log_dir)) {
+                return;
+            }
+            
+            $timestamp = function_exists('current_time') ? current_time('Y-m-d H:i:s') : date('Y-m-d H:i:s');
+            $log_entry = "[{$timestamp}] [{$level}] {$message}" . PHP_EOL;
+            
+            // Try to write to log file with error handling
+            if (@file_put_contents($log_file, $log_entry, FILE_APPEND | LOCK_EX) === false) {
+                // If we can't write to our log file, fall back to WP debug log
+                if (defined('WP_DEBUG') && WP_DEBUG && function_exists('error_log')) {
+                    error_log("Mauka Meta Pixel: {$message}");
+                }
+            }
+            
+            // Limit log file size (max 10MB)
+            if (file_exists($log_file) && filesize($log_file) > 10 * 1024 * 1024) {
+                $lines = @file($log_file);
+                if ($lines && is_array($lines)) {
+                    $keep_lines = array_slice($lines, -1000); // Keep last 1000 lines
+                    @file_put_contents($log_file, implode('', $keep_lines));
+                }
+            }
+        } catch (Exception $e) {
+            // Silent fail - we don't want logging to break functionality
         }
     }
     
     /**
      * Send CAPI event to Meta
+     * 
+     * @param string $event_name The name of the event
+     * @param array $event_data Event metadata like event_id
+     * @param array $custom_data Custom event data
+     * @param int|null $order_id WooCommerce order ID if applicable
+     * @param int|null $event_time Custom event timestamp
+     * @param array|null $additional_user_data Additional user data to merge with automatically collected data
+     * @return bool Success status
      */
-    public static function send_capi_event($event_name, $event_data = array(), $custom_data = array(), $order_id = null, $event_time = null) {
+    public static function send_capi_event($event_name, $event_data = array(), $custom_data = array(), $order_id = null, $event_time = null, $additional_user_data = null) {
+        // Debug log the event attempt
+        self::log("Attempting to send CAPI event: {$event_name}", 'debug');
+        
+        // Check if the main plugin function exists
+        if (!function_exists('mauka_meta_pixel')) {
+            self::log("CAPI event failed: mauka_meta_pixel function does not exist", 'error');
+            return false;
+        }
+        
         $plugin = mauka_meta_pixel();
         
-        if (!$plugin || !$plugin->get_option('capi_enabled')) {
+        if (!$plugin) {
+            self::log("CAPI event failed: plugin instance not available", 'error');
+            return false;
+        }
+        
+        if (!$plugin->get_option('capi_enabled')) {
+            self::log("CAPI event not sent: CAPI is disabled in settings", 'info');
             return false;
         }
         
         $pixel_id = $plugin->get_option('pixel_id');
         $access_token = $plugin->get_option('access_token');
+        
+        // Debug log the pixel ID and access token (masked)
+        self::log("Pixel ID: {$pixel_id}", 'debug');
+        if (!empty($access_token)) {
+            $masked_token = substr($access_token, 0, 4) . '...' . substr($access_token, -4);
+            self::log("Access Token: {$masked_token}", 'debug');
+        }
         
         if (empty($pixel_id) || empty($access_token)) {
             self::log('CAPI event failed: Missing Pixel ID or Access Token', 'error');
@@ -308,42 +469,84 @@ class Mauka_Meta_Pixel_Helpers {
             $event_time = time();
         }
         
+        // Get user data
+        $user_data = self::get_user_data($order_id);
+        
+        // Merge with additional user data if provided
+        if (!empty($additional_user_data) && is_array($additional_user_data)) {
+            $user_data = array_merge($user_data, $additional_user_data);
+        }
+        
         // Prepare event data
         $event = array(
             'event_name' => $event_name,
             'event_time' => $event_time,
             'event_id' => isset($event_data['event_id']) ? $event_data['event_id'] : self::generate_event_id($event_name),
             'action_source' => 'website',
-            'event_source_url' => home_url(add_query_arg(array(), $GLOBALS['wp']->request)),
-            'user_data' => self::get_user_data($order_id),
+            'user_data' => $user_data,
         );
         
-        // Add custom data
-        if (!empty($custom_data) && is_array($custom_data)) {
+        // Safely add event source URL if possible
+        if (function_exists('home_url') && isset($GLOBALS['wp']) && isset($GLOBALS['wp']->request)) {
+            $event['event_source_url'] = home_url(add_query_arg(array(), $GLOBALS['wp']->request));
+        } elseif (function_exists('home_url')) {
+            $event['event_source_url'] = home_url('/');
+        }
+        
+        // Process custom data with improved content_id handling
+        if (!empty($custom_data)) {
+            // Ensure content_ids is properly formatted as array if it exists
+            if (isset($custom_data['content_ids']) && !is_array($custom_data['content_ids'])) {
+                if (is_string($custom_data['content_ids'])) {
+                    // Convert comma-separated string to array
+                    $custom_data['content_ids'] = array_map('trim', explode(',', $custom_data['content_ids']));
+                } else {
+                    // Convert single value to array
+                    $custom_data['content_ids'] = array($custom_data['content_ids']);
+                }
+            }
+            
+            // Ensure content_id is included in content_ids if present
+            if (isset($custom_data['content_id']) && !empty($custom_data['content_id'])) {
+                if (!isset($custom_data['content_ids'])) {
+                    $custom_data['content_ids'] = array($custom_data['content_id']);
+                } elseif (!in_array($custom_data['content_id'], $custom_data['content_ids'])) {
+                    $custom_data['content_ids'][] = $custom_data['content_id'];
+                }
+            }
+            
+            // Add custom data to event
             $event['custom_data'] = $custom_data;
         }
         
-        // Prepare API request data
-        $api_url = "https://graph.facebook.com/v19.0/{$pixel_id}/events";
+        // Prepare API URL and data
+        $api_url = "https://graph.facebook.com/v17.0/{$pixel_id}/events";
         $data = array(
             'data' => array($event),
             'access_token' => $access_token,
         );
         
-        // Add test event code at the request level
-        $test_mode = $plugin->get_option('test_mode');
-        if ($test_mode) {
-            $test_event_code = $plugin->get_option('test_event_code');
-            if (!empty($test_event_code)) {
-                $data['test_event_code'] = $test_event_code;
-            }
+        // Get test event code if available
+        $test_event_code = $plugin->get_option('test_event_code');
+        if (!empty($test_event_code)) {
+            $data['test_event_code'] = $test_event_code;
+            self::log("Using test event code: {$test_event_code}", 'debug');
+        } else {
+            self::log("No test event code configured", 'debug');
         }
         
         // Send request with retry logic for better CAPI coverage
         $max_retries = 2;
         $retry_count = 0;
         
+        // Log the request payload (for debugging)
+        self::log("CAPI request payload: " . json_encode($data), 'debug');
+        self::log("CAPI API URL: {$api_url}", 'debug');
+        self::log("Test event code: " . (!empty($test_event_code) ? $test_event_code : 'none'), 'debug');
+        
         do {
+            self::log("Sending CAPI request (attempt #{$retry_count})", 'debug');
+            
             $response = wp_remote_post($api_url, array(
                 'timeout' => 30,
                 'headers' => array(
@@ -366,7 +569,22 @@ class Mauka_Meta_Pixel_Helpers {
             $response_code = wp_remote_retrieve_response_code($response);
             $response_body = wp_remote_retrieve_body($response);
             
+            // Log the full response for debugging
+            self::log("CAPI response code: {$response_code}", 'debug');
+            self::log("CAPI response body: {$response_body}", 'debug');
+            
             if ($response_code === 200) {
+                // Parse response to check for test event validation
+                $response_data = json_decode($response_body, true);
+                
+                if (!empty($test_event_code)) {
+                    if (isset($response_data['events_received']) && $response_data['events_received'] > 0) {
+                        self::log("Test event successfully received by Meta: {$event_name} (ID: {$event['event_id']})", 'info');
+                    } else {
+                        self::log("Test event may not have been properly received by Meta despite 200 response", 'warning');
+                    }
+                }
+                
                 self::log("CAPI event sent successfully: {$event_name} (ID: {$event['event_id']})", 'info');
                 return true;
             } else if ($response_code >= 500 && $retry_count < $max_retries) {
@@ -380,6 +598,9 @@ class Mauka_Meta_Pixel_Helpers {
                 return false;
             }
         } while ($retry_count <= $max_retries);
+        
+        // Fallback return in case we somehow exit the loop without returning
+        return false;
     }
     
     /**
@@ -402,11 +623,13 @@ class Mauka_Meta_Pixel_Helpers {
      */
     public static function get_product_data($product_id) {
         if (!$product_id || !function_exists('wc_get_product')) {
+            self::log("Cannot get product data: Invalid product ID or WooCommerce not active", 'debug');
             return array();
         }
         
         $product = wc_get_product($product_id);
         if (!$product) {
+            self::log("Cannot get product data: Product {$product_id} not found", 'debug');
             return array();
         }
         
@@ -425,17 +648,46 @@ class Mauka_Meta_Pixel_Helpers {
             }
         }
         
-        return array(
+        // Log the content ID generation
+        self::log("Generated content_id '{$content_id}' for product {$product_id} using format {$content_id_format}", 'debug');
+        
+        // Build a comprehensive product data array for Meta
+        $product_data = array(
             'content_id' => $content_id,
             'content_name' => $product->get_name(),
             'content_type' => 'product',
-            'content_category' => self::get_product_categories($product),
             'value' => self::format_price($product->get_price()),
             'currency' => function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'USD',
-            // Add additional fields that help with catalog matching
-            'brand' => self::get_product_brand($product),
+            'content_ids' => array($content_id),
             'availability' => $product->is_in_stock() ? 'in stock' : 'out of stock',
         );
+        
+        // Add item_price for better reporting
+        $product_data['item_price'] = self::format_price($product->get_price());
+        
+        // Add product URL if available
+        if (method_exists($product, 'get_permalink')) {
+            $product_data['item_url'] = $product->get_permalink();
+        }
+        
+        // Add product image URL if available
+        if (function_exists('wp_get_attachment_url') && $product->get_image_id()) {
+            $product_data['image_url'] = wp_get_attachment_url($product->get_image_id());
+        }
+        
+        // Add product categories
+        $categories = self::get_product_categories($product);
+        if (!empty($categories)) {
+            $product_data['content_category'] = $categories;
+        }
+        
+        // Add product brand if available
+        $brand = self::get_product_brand($product);
+        if (!empty($brand)) {
+            $product_data['brand'] = $brand;
+        }
+        
+        return $product_data;
     }
     
     /**
@@ -467,9 +719,12 @@ class Mauka_Meta_Pixel_Helpers {
      * Check if tracking is enabled for event
      */
     public static function is_event_enabled($event_name) {
+        self::log("Checking if event '{$event_name}' is enabled", 'debug');
+        
         $plugin = mauka_meta_pixel();
         
         if (!$plugin) {
+            self::log("Event '{$event_name}' check failed: plugin instance not available", 'debug');
             return false;
         }
         
@@ -488,6 +743,15 @@ class Mauka_Meta_Pixel_Helpers {
         );
         
         $option_key = isset($option_map[$event_name]) ? $option_map[$event_name] : null;
-        return $option_key ? $plugin->get_option($option_key, true) : false;
+        
+        if (!$option_key) {
+            self::log("Event '{$event_name}' check failed: no matching option key in map", 'debug');
+            return false;
+        }
+        
+        $is_enabled = $plugin->get_option($option_key, true);
+        self::log("Event '{$event_name}' is " . ($is_enabled ? 'enabled' : 'disabled') . " (option key: {$option_key})", 'debug');
+        
+        return $is_enabled;
     }
 } 
