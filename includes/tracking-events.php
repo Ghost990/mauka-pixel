@@ -417,13 +417,77 @@ class Mauka_Meta_Pixel_Tracking {
             $enhanced_data
         ));
 
+        // Get current user data for better matching
+        $user_data = array();
+        if (function_exists('wp_get_current_user')) {
+            $user = wp_get_current_user();
+            if ($user && $user->ID) {
+                $user_data['em'] = Mauka_Meta_Pixel_Helpers::hash_user_data($user->user_email);
+                $user_data['fn'] = Mauka_Meta_Pixel_Helpers::hash_user_data($user->first_name);
+                $user_data['ln'] = Mauka_Meta_Pixel_Helpers::hash_user_data($user->last_name);
+            }
+        }
+        
+        // Get data from WooCommerce session if available
+        if (function_exists('WC') && WC()->session) {
+            $session_customer = WC()->session->get('customer');
+            if (!empty($session_customer)) {
+                if (!empty($session_customer['email']) && empty($user_data['em'])) {
+                    $user_data['em'] = Mauka_Meta_Pixel_Helpers::hash_user_data($session_customer['email']);
+                }
+                if (!empty($session_customer['first_name']) && empty($user_data['fn'])) {
+                    $user_data['fn'] = Mauka_Meta_Pixel_Helpers::hash_user_data($session_customer['first_name']);
+                }
+                if (!empty($session_customer['last_name']) && empty($user_data['ln'])) {
+                    $user_data['ln'] = Mauka_Meta_Pixel_Helpers::hash_user_data($session_customer['last_name']);
+                }
+                if (!empty($session_customer['postcode'])) {
+                    $user_data['zp'] = hash('sha256', $session_customer['postcode']);
+                }
+                if (!empty($session_customer['city'])) {
+                    $user_data['ct'] = Mauka_Meta_Pixel_Helpers::hash_user_data($session_customer['city']);
+                }
+                if (!empty($session_customer['state'])) {
+                    $user_data['st'] = Mauka_Meta_Pixel_Helpers::hash_user_data($session_customer['state']);
+                }
+                if (!empty($session_customer['country'])) {
+                    $user_data['country'] = Mauka_Meta_Pixel_Helpers::hash_user_data($session_customer['country']);
+                }
+            }
+        }
+        
+        // Add event source URL for better tracking
+        $event_source_url = '';
+        if (isset($_SERVER['HTTP_REFERER'])) {
+            $event_source_url = $_SERVER['HTTP_REFERER'];
+        } elseif (function_exists('get_permalink') && $actual_product_id) {
+            $event_source_url = get_permalink($actual_product_id);
+        }
+        
+        // Log the AddToCart attempt with detailed information
+        Mauka_Meta_Pixel_Helpers::log("Sending AddToCart CAPI event for product #{$actual_product_id} with event_id: {$event_id}", 'debug');
+        
+        // Add current event time to ensure proper timestamp
+        $current_time = time();
+        
         // Send CAPI event with enhanced data for better matching
-        Mauka_Meta_Pixel_Helpers::send_capi_event('AddToCart',
-            array('event_id' => $event_id),
+        $capi_result = Mauka_Meta_Pixel_Helpers::send_capi_event('AddToCart',
+            array(
+                'event_id' => $event_id,
+                'event_source_url' => $event_source_url
+            ),
             $enhanced_data,
             null,
-            $event_time
+            $current_time,
+            $user_data
         );
+        
+        // Log success or failure
+        if ($capi_result) {
+            Mauka_Meta_Pixel_Helpers::log("AddToCart CAPI event sent successfully for product #{$actual_product_id}", 'info');
+        } else {
+            Mauka_Meta_Pixel_Helpers::log("AddToCart CAPI event FAILED for product #{$actual_product_id}", 'error');
+        }
     }
 
     /**
@@ -695,6 +759,7 @@ class Mauka_Meta_Pixel_Tracking {
             );
         }
         
+        // Enhanced payload with additional parameters required for better CAPI matching
         $payload = array(
             'content_ids' => $content_ids,
             'contents' => $contents,
@@ -702,13 +767,42 @@ class Mauka_Meta_Pixel_Tracking {
             'value' => (float) $order->get_total(),
             'currency' => $order->get_currency(),
             'num_items' => $order->get_item_count(),
+            // Add order info for better conversion tracking
+            'order_id' => (string)$order_id,
+            'transaction_id' => (string)$order_id,
         );
         
         // Add to page for pixel tracking
         $this->add_pixel_event('Purchase', array_merge(array('event_id' => $event_id), $payload));
         
-        // Extract additional user data from order meta
+        // Extract comprehensive user data from order for better CAPI matching
         $additional_user_data = array();
+        
+        // Add direct order billing data for better user matching
+        if ($order->get_billing_email()) {
+            $additional_user_data['em'] = Mauka_Meta_Pixel_Helpers::hash_user_data($order->get_billing_email());
+        }
+        if ($order->get_billing_phone()) {
+            $additional_user_data['ph'] = Mauka_Meta_Pixel_Helpers::hash_phone($order->get_billing_phone());
+        }
+        if ($order->get_billing_first_name()) {
+            $additional_user_data['fn'] = Mauka_Meta_Pixel_Helpers::hash_user_data($order->get_billing_first_name());
+        }
+        if ($order->get_billing_last_name()) {
+            $additional_user_data['ln'] = Mauka_Meta_Pixel_Helpers::hash_user_data($order->get_billing_last_name());
+        }
+        if ($order->get_billing_city()) {
+            $additional_user_data['ct'] = Mauka_Meta_Pixel_Helpers::hash_user_data($order->get_billing_city());
+        }
+        if ($order->get_billing_state()) {
+            $additional_user_data['st'] = Mauka_Meta_Pixel_Helpers::hash_user_data($order->get_billing_state());
+        }
+        if ($order->get_billing_postcode()) {
+            $additional_user_data['zp'] = hash('sha256', $order->get_billing_postcode());
+        }
+        if ($order->get_billing_country()) {
+            $additional_user_data['country'] = Mauka_Meta_Pixel_Helpers::hash_user_data($order->get_billing_country());
+        }
         
         // Check for subscription data if WooCommerce Subscriptions is active
         if (function_exists('wcs_get_subscriptions_for_order')) {
@@ -729,29 +823,60 @@ class Mauka_Meta_Pixel_Tracking {
                 $field_name = str_replace('_billing_', '', $key);
                 $additional_user_data[$field_name] = Mauka_Meta_Pixel_Helpers::hash_user_data($value);
             }
+            
+            // Check for date of birth in order meta
+            if (stripos($key, 'birth') !== false || stripos($key, 'dob') !== false) {
+                $dob = $value;
+                // Format date to YYYYMMDD if possible
+                if (strtotime($dob)) {
+                    $additional_user_data['db'] = Mauka_Meta_Pixel_Helpers::hash_user_data(date('Ymd', strtotime($dob)));
+                }
+            }
+            
+            // Check for gender in order meta
+            if (stripos($key, 'gender') !== false) {
+                $gender = strtolower(substr($value, 0, 1));
+                if ($gender == 'm' || $gender == 'f') {
+                    $additional_user_data['ge'] = Mauka_Meta_Pixel_Helpers::hash_user_data($gender);
+                }
+            }
         }
         
-        // Send CAPI event with enhanced user data
+        // Send CAPI event with enhanced user data and detailed logging
         Mauka_Meta_Pixel_Helpers::log("Sending Purchase CAPI event for order #{$order_id} with event_id: {$event_id}", 'debug');
         Mauka_Meta_Pixel_Helpers::log("Purchase payload: " . json_encode($payload), 'debug');
+        Mauka_Meta_Pixel_Helpers::log("Additional user data parameters: " . count($additional_user_data), 'debug');
         
+        // Add additional debugging in the browser console
+        echo '<script>console.log("MAUKA DEBUG: Sending Purchase CAPI event for order #' . esc_js($order_id) . ' with event_id: ' . esc_js($event_id) . '");</script>';
+        
+        // Force the event time to be the current time to avoid any timing issues
+        $current_event_time = time();
+        
+        // Send the CAPI event with enhanced data
         $capi_result = Mauka_Meta_Pixel_Helpers::send_capi_event('Purchase', 
-            array('event_id' => $event_id), 
+            array(
+                'event_id' => $event_id,
+                'event_source_url' => isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : home_url('/checkout/order-received/' . $order_id),
+            ),
             $payload, 
             $order_id, 
-            $event_time, 
+            $current_event_time, 
             $additional_user_data
         );
         
         if ($capi_result) {
             Mauka_Meta_Pixel_Helpers::log("Purchase CAPI event sent successfully for order #{$order_id}", 'info');
+            echo '<script>console.log("MAUKA DEBUG: Purchase CAPI event sent successfully for order #' . esc_js($order_id) . '");</script>';
             
             // Mark as tracked to prevent duplicates
             $order->update_meta_data('_mauka_pixel_tracked', true);
+            $order->update_meta_data('_mauka_pixel_tracked_time', current_time('mysql'));
             $order->save();
             Mauka_Meta_Pixel_Helpers::log("Order #{$order_id} marked as tracked", 'debug');
         } else {
             Mauka_Meta_Pixel_Helpers::log("Purchase CAPI event FAILED for order #{$order_id}", 'error');
+            echo '<script>console.log("MAUKA DEBUG: Purchase CAPI event FAILED for order #' . esc_js($order_id) . '");</script>';
         }
     }
 
