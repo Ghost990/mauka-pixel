@@ -1,0 +1,106 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Mauka Meta Pixel – Technical Summary
+
+## Overview
+
+**Mauka Meta Pixel** is a professional WordPress plugin designed for seamless integration of Meta (Facebook) Pixel tracking, including both client-side (browser) and server-side (Conversions API, CAPI) event tracking. It is built with a focus on WooCommerce compatibility, GDPR compliance, and robust deduplication between browser and server events.
+
+- **Plugin URI:** https://mauka.hu
+- **Author:** Mauka Digital Marketing Agency
+- **Version:** 1.0.1
+- **License:** GPLv2 or later
+
+---
+
+## Key Features
+
+- **Dual Tracking:** Supports both Meta Pixel (browser) and Conversions API (server) for comprehensive event tracking.
+- **Perfect Deduplication:** Ensures consistent `event_id`, `fbp`, and `fbc` values across browser and server to avoid duplicate events.
+- **GDPR Compliance:** All user data is hashed (SHA256) before transmission.
+- **Automatic Cookie Management:** Handles `fbp` and `fbc` cookies automatically.
+- **Test Mode:** Allows safe testing with Meta’s test event codes.
+- **Event Control:** Enable/disable individual event types via the admin interface.
+- **WooCommerce Support:** Tracks all major e-commerce events (product views, add to cart, checkout, purchase, registration, search).
+- **Comprehensive Logging:** Logs all server-side requests for debugging.
+- **Security:** Uses secure AJAX, nonces, and admin-only access for sensitive operations.
+- **Cache Friendly:** Compatible with major caching plugins and CDNs.
+
+---
+
+## Supported Events
+
+- **Standard Events:** PageView, ViewContent, AddToCart, InitiateCheckout, Purchase, Search
+- **Lead Events:** Lead (contact forms), CompleteRegistration (user sign-ups)
+
+---
+
+## Technical Architecture
+
+- **Main File:** `mauka-meta-pixel.php`
+  - Implements a singleton class `Mauka_Meta_Pixel` for plugin logic.
+  - Loads dependencies from `includes/` and `admin/`.
+  - Registers hooks for WordPress and WooCommerce.
+  - Handles plugin activation/deactivation, settings, and admin UI.
+  - Injects pixel scripts into the site’s `<head>` and `<footer>`.
+- **Includes:**
+  - `includes/helpers.php`: Utility functions.
+  - `includes/tracking-events.php`: Event tracking logic.
+- **Assets:**
+  - `assets/pixel-js.php`: Outputs the dynamic JavaScript for Meta Pixel.
+- **Admin UI:**
+  - `admin/admin-ui.php`: Provides the settings page and admin interface.
+- **Logging:**
+  - Logs server-side requests to `log/mauka-capi.log`.
+
+---
+
+## Installation & Configuration
+
+1. Upload to `/wp-content/plugins/mauka-meta-pixel/`
+2. Activate via WordPress admin.
+3. Configure via **Settings > Meta Pixel**:
+   - Enter Meta Pixel ID and Access Token.
+   - Enable desired tracking methods and events.
+   - Use test mode for development.
+4. WooCommerce integration is automatic if WooCommerce is active.
+
+---
+
+## Technical Requirements
+
+- **WordPress:** 5.0 or higher
+- **PHP:** 7.4 or higher
+- **WooCommerce:** 5.0+ (optional, for e-commerce features)
+- **Meta Pixel ID and Access Token** required
+
+---
+
+## Best Practices & Rules
+
+- **Do not echo output directly in the main plugin file.**
+- **All user data sent to Meta must be hashed for privacy.**
+- **Use nonces and capability checks for all admin and AJAX actions.**
+- **Ensure deduplication by maintaining consistent event IDs between browser and server.**
+- **Log all server-side CAPI requests for traceability.**
+- **Respect user privacy and comply with GDPR at all times.**
+- **Test mode should be disabled on production sites.**
+- **Update your privacy policy to reflect Meta Pixel and CAPI usage.**
+
+---
+
+## Privacy & Compliance
+
+- All data sent to Meta is hashed and privacy-respecting.
+- The plugin is designed to be GDPR-compliant.
+- Administrators should ensure their site’s privacy policy is updated accordingly.
+
+---
+
+## Support
+
+
+For documentation and support, visit [mauka.hu](https://mauka.hu).

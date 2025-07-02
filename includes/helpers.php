@@ -13,31 +13,9 @@ if (!defined('ABSPATH')) {
 class Mauka_Meta_Pixel_Helpers {
     
     /**
-     * Generate a unique event ID
-     * 
-     * @param string $event_name
-     * @param mixed $identifier
-     * @return string
-     */
-    public static function generate_event_id($event_name, $identifier = null) {
-        // Create consistent IDs using same format as Meta expects
-        // This ensures better deduplication between browser and server events
-        $unique_base = uniqid('', true);
-        
-        // Add identifier for better specificity
-        if ($identifier) {
-            $unique_base .= '_' . $identifier;
-        }
-        
-        // Use consistent format for both client-side and server-side events
-        // Limited to 36 characters as recommended by Meta
-        return substr(md5($event_name . '_' . $unique_base), 0, 36);
-    }
-    
-    /**
      * Generate unique event ID for deduplication
      */
-    public static function generate_legacy_event_id($event_name = '', $additional_data = '') {
+    public static function generate_event_id($event_name = '', $additional_data = '') {
         $timestamp = microtime(true);
         $user_id = get_current_user_id();
         $session_id = self::get_session_id();
@@ -331,12 +309,26 @@ class Mauka_Meta_Pixel_Helpers {
             }
         }
         
-        // Get Facebook Login ID if available
-        if (function_exists('get_user_meta') && isset($user) && $user && $user->ID) {
-            $fb_login_id = get_user_meta($user->ID, 'facebook_login_id', true);
-            if (!empty($fb_login_id)) {
-                $user_data['fb_login_id'] = $fb_login_id;
+        // Add Facebook Login ID if available (not hashed)
+        $fb_login_id = null;
+        if ($order_id) {
+            $order = wc_get_order($order_id);
+            if ($order) {
+                $user_id = $order->get_user_id();
+                if ($user_id) {
+                    $fb_login_id = get_user_meta($user_id, 'facebook_login_id', true);
+                } else {
+                    $fb_login_id = $order->get_meta('facebook_login_id', true);
+                }
             }
+        } else {
+            $user = wp_get_current_user();
+            if ($user && $user->ID) {
+                $fb_login_id = get_user_meta($user->ID, 'facebook_login_id', true);
+            }
+        }
+        if (!empty($fb_login_id)) {
+            $user_data['fb_login_id'] = $fb_login_id;
         }
 
         return array_filter($user_data);
@@ -500,66 +492,51 @@ class Mauka_Meta_Pixel_Helpers {
             $event_time = time();
         }
         
-        // Get user data - enhancing with all available parameters for better match rate
+        // Get user data
         $user_data = self::get_user_data($order_id);
         
-        // Ensure we have all recommended user data parameters to improve match quality
-        self::ensure_recommended_user_data($user_data);
+        // Add Facebook Login ID if available (not hashed)
+        $fb_login_id = null;
+        if ($order_id) {
+            $order = wc_get_order($order_id);
+            if ($order) {
+                $user_id = $order->get_user_id();
+                if ($user_id) {
+                    $fb_login_id = get_user_meta($user_id, 'facebook_login_id', true);
+                } else {
+                    $fb_login_id = $order->get_meta('facebook_login_id', true);
+                }
+            }
+        } else {
+            $user = wp_get_current_user();
+            if ($user && $user->ID) {
+                $fb_login_id = get_user_meta($user->ID, 'facebook_login_id', true);
+            }
+        }
+        if (!empty($fb_login_id)) {
+            $user_data['fb_login_id'] = $fb_login_id;
+        }
         
         // Merge with additional user data if provided
         if (!empty($additional_user_data) && is_array($additional_user_data)) {
             $user_data = array_merge($user_data, $additional_user_data);
         }
         
-        // CRITICAL: Ensure we have the necessary Facebook cookies for DEDUPLICATION
-        if (empty($user_data['fbp'])) {
-            $user_data['fbp'] = self::get_fbp();
-            if (!empty($user_data['fbp'])) {
-                self::log("Added missing fbp cookie for deduplication: " . substr($user_data['fbp'], 0, 10) . '...', 'debug');
-            }
-        }
-        
-        if (empty($user_data['fbc'])) {
-            $fbc = self::get_fbc();
-            if ($fbc) {
-                $user_data['fbc'] = $fbc;
-                self::log("Added missing fbc cookie for deduplication: " . substr($user_data['fbc'], 0, 10) . '...', 'debug');
-            }
-        }
-        
-        // Get event ID - ensure consistency with browser events for proper deduplication
-        $event_id = isset($event_data['event_id']) ? $event_data['event_id'] : self::generate_event_id($event_name);
-        
-        // Log deduplication keys available for troubleshooting
-        $dedupe_keys_available = array(
-            'has_event_id' => !empty($event_id),
-            'has_fbp' => !empty($user_data['fbp']),
-            'has_fbc' => !empty($user_data['fbc']),
-            'has_external_id' => !empty($user_data['external_id']),
-            'has_em' => !empty($user_data['em']),
-            'has_ph' => !empty($user_data['ph'])
-        );
-        self::log("CAPI Deduplication keys for {$event_name}: " . json_encode($dedupe_keys_available), 'info');
-        
-        // Prepare event data with proper deduplication fields
+        // Prepare event data
         $event = array(
             'event_name' => $event_name,
-            'event_time' => (int)$event_time, // Ensure integer timestamp for event_time
-            'event_id' => $event_id,
+            'event_time' => $event_time,
+            'event_id' => isset($event_data['event_id']) ? $event_data['event_id'] : self::generate_event_id($event_name),
             'action_source' => 'website',
             'user_data' => $user_data,
         );
         
-        // Safely add event source URL if possible - important for event matching
+        // Safely add event source URL if possible
         if (function_exists('home_url') && isset($GLOBALS['wp']) && isset($GLOBALS['wp']->request)) {
             $event['event_source_url'] = home_url(add_query_arg(array(), $GLOBALS['wp']->request));
         } elseif (function_exists('home_url')) {
             $event['event_source_url'] = home_url('/');
         }
-        
-        // Add event timestamp in ISO 8601 format as a backup for event_time
-        // This helps ensure proper event timing for Meta
-        $event['event_timestamp'] = date('c', $event_time);
         
         // Process custom data with improved content_id handling
         if (!empty($custom_data)) {
@@ -821,67 +798,5 @@ class Mauka_Meta_Pixel_Helpers {
         self::log("Event '{$event_name}' is " . ($is_enabled ? 'enabled' : 'disabled') . " (option key: {$option_key})", 'debug');
         
         return $is_enabled;
-    }
-    
-    /**
-     * Ensure all recommended user data parameters are included to improve match rates
-     * Based on the Meta Pixel diagnostics data showing potential 12-16% match rate improvement
-     * 
-     * @param array &$user_data The user data array to enhance with missing parameters
-     * @return void
-     */
-    public static function ensure_recommended_user_data(&$user_data) {
-        self::log("Enhancing user data parameters for better match quality", 'debug');
-        
-        // Default values to use when user data is incomplete
-        // These significantly improve match quality according to Meta Pixel diagnostics
-        $defaults = array(
-            'ct' => self::hash_user_data('Budapest'), // City
-            'st' => self::hash_user_data('Budapest'), // State
-            'zp' => hash('sha256', '1051'),          // ZIP code
-            'country' => self::hash_user_data('HU'),  // Country
-        );
-        
-        // Define the most important parameters for match quality
-        // Based on Meta Pixel diagnostics report showing 12-16% potential match improvement
-        $important_params = array('em', 'ph', 'fn', 'ln', 'ct', 'st', 'zp', 'country', 'db', 'ge');
-        
-        // Logging current state of parameters
-        $missing_params = array();
-        foreach ($important_params as $param) {
-            if (empty($user_data[$param])) {
-                $missing_params[] = $param;
-            }
-        }
-        
-        if (!empty($missing_params)) {
-            self::log("Missing user data parameters that could improve match quality: " . implode(', ', $missing_params), 'debug');
-        }
-        
-        // Fill in missing parameters from defaults
-        foreach ($defaults as $key => $value) {
-            if (empty($user_data[$key])) {
-                $user_data[$key] = $value;
-                self::log("Added default value for user data parameter: {$key}", 'debug');
-            }
-        }
-        
-        // Ensure we have external_id - critical for user matching
-        if (empty($user_data['external_id'])) {
-            $session_id = self::get_session_id();
-            $user_data['external_id'] = self::hash_user_data('visitor_' . $session_id);
-            self::log("Generated default external_id from session", 'debug');
-        }
-        
-        // Always ensure client IP and user agent are included
-        if (empty($user_data['client_ip_address']) && self::get_client_ip()) {
-            $user_data['client_ip_address'] = self::get_client_ip();
-        }
-        
-        if (empty($user_data['client_user_agent']) && self::get_user_agent()) {
-            $user_data['client_user_agent'] = self::get_user_agent();
-        }
-        
-        self::log("User data parameters enhanced for better match quality", 'debug');
     }
 } 
