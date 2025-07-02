@@ -432,3 +432,72 @@ fbq('track', 'Purchase', {
     }
 endif; 
 ?>
+
+<!-- --- BEGIN: User Data Hashing for Meta Pixel --- -->
+(function() {
+    // Minimal SHA256 implementation (c) Chris Veness, MIT License
+    function sha256(ascii) {
+        function rightRotate(v, a) { return (v>>>a) | (v<<(32-a)); }
+        var mathPow = Math.pow, maxWord = Math.pow(2, 32), result = '', words = [], asciiBitLength = ascii.length*8;
+        var hash = sha256.h = sha256.h || [], k = sha256.k = sha256.k || [], primeCounter = k.length;
+        var isComposite = {};
+        for (var candidate = 2; primeCounter < 64; candidate++) {
+            if (!isComposite[candidate]) {
+                for (i = 0; i < 313; i += candidate) isComposite[i] = candidate;
+                hash[primeCounter] = (mathPow(candidate, .5)*maxWord)|0;
+                k[primeCounter++] = (mathPow(candidate, 1/3)*maxWord)|0;
+            }
+        }
+        ascii += '\x80';
+        while (ascii.length%64 - 56) ascii += '\x00';
+        for (i = 0; i < ascii.length; i++) {
+            j = ascii.charCodeAt(i);
+            if (j>>8) return; // ASCII only
+            words[i>>2] |= j << ((3-i)%4)*8;
+        }
+        words[words.length] = ((asciiBitLength/Math.pow(2, 32))|0);
+        words[words.length] = (asciiBitLength|0);
+        for (j = 0; j < words.length;) {
+            var w = words.slice(j, j += 16), oldHash = hash.slice(0), i;
+            for (i = 16; i < 64; i++) w[i] = (rightRotate(w[i-2],17)^rightRotate(w[i-2],19)^(w[i-2]>>>10))+w[i-7]+(rightRotate(w[i-15],7)^rightRotate(w[i-15],18)^(w[i-15]>>>3))+w[i-16]|0;
+            var a = hash[0], b = hash[1], c = hash[2], d = hash[3], e = hash[4], f = hash[5], g = hash[6], h = hash[7];
+            for (i = 0; i < 64; i++) {
+                var t1 = h + (rightRotate(e,6)^rightRotate(e,11)^rightRotate(e,25)) + ((e&f)^((~e)&g)) + k[i] + w[i];
+                var t2 = (rightRotate(a,2)^rightRotate(a,13)^rightRotate(a,22)) + ((a&b)^(a&c)^(b&c));
+                h = g; g = f; f = e; e = d + t1|0; d = c; c = b; b = a; a = t1 + t2|0;
+            }
+            hash[0] = hash[0]+a|0; hash[1] = hash[1]+b|0; hash[2] = hash[2]+c|0; hash[3] = hash[3]+d|0;
+            hash[4] = hash[4]+e|0; hash[5] = hash[5]+f|0; hash[6] = hash[6]+g|0; hash[7] = hash[7]+h|0;
+        }
+        for (i = 0; i < hash.length; i++) {
+            for (j = 3; j + 1; j--) {
+                var b = (hash[i]>>(j*8))&255;
+                result += ((b>>4).toString(16)) + ((b&15).toString(16));
+            }
+        }
+        return result;
+    }
+    function getField(selector) {
+        var el = document.querySelector(selector);
+        return el ? el.value.trim().toLowerCase() : '';
+    }
+    function hashIf(val) { return val ? sha256(val) : undefined; }
+    // Try to get user data from WooCommerce checkout fields
+    var userData = {};
+    userData.em = hashIf(getField('#billing_email'));
+    userData.ph = hashIf(getField('#billing_phone').replace(/[^0-9]/g, ''));
+    userData.fn = hashIf(getField('#billing_first_name'));
+    userData.ln = hashIf(getField('#billing_last_name'));
+    userData.ct = hashIf(getField('#billing_city'));
+    userData.st = hashIf(getField('#billing_state'));
+    userData.zp = hashIf(getField('#billing_postcode'));
+    userData.country = hashIf(getField('#billing_country'));
+    // Remove empty fields
+    Object.keys(userData).forEach(function(k){ if(!userData[k]) delete userData[k]; });
+    // If we have any user data, re-init fbq with it
+    if(Object.keys(userData).length > 0 && typeof fbq !== 'undefined') {
+        fbq('init', window.maukaMetaPixelId, userData);
+        console.log('Mauka Meta Pixel: fbq re-initialized with user data', userData);
+    }
+})();
+<!-- --- END: User Data Hashing for Meta Pixel --- -->

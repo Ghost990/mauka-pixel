@@ -309,12 +309,26 @@ class Mauka_Meta_Pixel_Helpers {
             }
         }
         
-        // Get Facebook Login ID if available
-        if (function_exists('get_user_meta') && isset($user) && $user && $user->ID) {
-            $fb_login_id = get_user_meta($user->ID, 'facebook_login_id', true);
-            if (!empty($fb_login_id)) {
-                $user_data['fb_login_id'] = $fb_login_id;
+        // Add Facebook Login ID if available (not hashed)
+        $fb_login_id = null;
+        if ($order_id) {
+            $order = wc_get_order($order_id);
+            if ($order) {
+                $user_id = $order->get_user_id();
+                if ($user_id) {
+                    $fb_login_id = get_user_meta($user_id, 'facebook_login_id', true);
+                } else {
+                    $fb_login_id = $order->get_meta('facebook_login_id', true);
+                }
             }
+        } else {
+            $user = wp_get_current_user();
+            if ($user && $user->ID) {
+                $fb_login_id = get_user_meta($user->ID, 'facebook_login_id', true);
+            }
+        }
+        if (!empty($fb_login_id)) {
+            $user_data['fb_login_id'] = $fb_login_id;
         }
 
         return array_filter($user_data);
@@ -480,6 +494,28 @@ class Mauka_Meta_Pixel_Helpers {
         
         // Get user data
         $user_data = self::get_user_data($order_id);
+        
+        // Add Facebook Login ID if available (not hashed)
+        $fb_login_id = null;
+        if ($order_id) {
+            $order = wc_get_order($order_id);
+            if ($order) {
+                $user_id = $order->get_user_id();
+                if ($user_id) {
+                    $fb_login_id = get_user_meta($user_id, 'facebook_login_id', true);
+                } else {
+                    $fb_login_id = $order->get_meta('facebook_login_id', true);
+                }
+            }
+        } else {
+            $user = wp_get_current_user();
+            if ($user && $user->ID) {
+                $fb_login_id = get_user_meta($user->ID, 'facebook_login_id', true);
+            }
+        }
+        if (!empty($fb_login_id)) {
+            $user_data['fb_login_id'] = $fb_login_id;
+        }
         
         // Merge with additional user data if provided
         if (!empty($additional_user_data) && is_array($additional_user_data)) {
